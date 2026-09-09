@@ -6,10 +6,10 @@
   "description": "An open-source, agent-native platform for multimodal AI generation, built on DeepSeek Harness. Every interaction lives in agent conversations and an infinite canvas, unifying creation, generation, and editing.",
   "author": "Dian Pratama <dianpratama2@gmail.com>",
   "license": "MIT",
-  "homepage": "https://github.com/9nvw7f94ym-eng/polox_ai",
+  "homepage": "https://github.com/saihhold-zhao/polox_ai",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/9nvw7f94ym-eng/polox_ai.git"
+    "url": "git+https://github.com/saihhold-zhao/polox_ai.git"
   },
   "keywords": [
     "ai",
