@@ -20,6 +20,8 @@
   If you run into a problem you cannot resolve, contact me on <a href="https://discord.gg/FwN6s664Dh">Discord</a>.
 </p>
 
+![PoloX AI workspace with agent conversations, an infinite canvas, and a video project](docs/images/polox-ai-workspace.png)
+
 ## Introduction
 
 This is the open-source edition of [PoloX AI](https://polox.ai), a creative platform in the same space as [Lovart](https://lovart.ai) and [Crepal](https://crepal.ai). PoloX takes an **agent-native** approach: agent conversations and an infinite canvas bring creation, generation, and editing into one continuous workflow. Describe what you want, work with the agent, and refine the results on the canvas.

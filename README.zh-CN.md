@@ -20,6 +20,8 @@
   遇到无法解决的问题，请通过 <a href="https://discord.gg/FwN6s664Dh">Discord</a> 联系我。
 </p>
 
+![PoloX AI 工作台：Agent 对话、无限画布与视频创作项目](docs/images/polox-ai-workspace.png)
+
 ## 简介
 
 本项目是 [PoloX AI](https://polox.ai) 的开源版本，与 [Lovart](https://lovart.ai)、[Crepal](https://crepal.ai) 同属 AI 创作平台。PoloX 采用 **Agent 原生**的产品设计：以 Agent 对话与无限画布承载全部交互，将创作、生成与编辑融入连续的工作流程。你只需描述想法，与 Agent 沟通，并在画布上持续完善结果。
