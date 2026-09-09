@@ -215,25 +215,3 @@ One `generate_video` per storyboard shot. Never text-to-video for a recurring ch
 ## Concat
 
 Call `concat_videos` with the clip URLs or session video ids **in story order**. Do not mix it with `generate_video` or `generate_image` in the same turn. Do not use `"latest"`. After the stitch, present the long video and stop.
-
-## Preset tool usage within this workflow
-
-These instructions apply only when this film's confirmed setup uses preset tools. Explicitly selected registered models always use their own schemas, field names, limits, and defaults.
-
-2. Call generate_image once per still. Submit all ready, independent generations in the same production stage together in the SAME turn, one tool call per output. Do not split a stage into arbitrary fixed-size batches. Wait for prerequisite outputs before submitting dependent generations.
-3. If this user message includes attached stills, or they asked to keep a person/product/style / use a photo as a reference, generate_image MUST set input_urls (the attached URLs, a session id, or "latest"). A new scene is still image-to-image when identity comes from a photo. Only omit input_urls when they clearly want a drawing from text alone and the attachments are unrelated. Do not invent URLs.
-4. To cut out or remove a background, call remove_background. Default to latest if which still is unclear.
-5. To make a video from ONE still (animate, motion), call generate_video with first_frame "latest" or the specific still URL. Optional last_frame if they gave an end frame. Do not set reference_images. For image-to-video always use aspect_ratio adaptive. Only raise resolution if the user named 720p, 1080p, or 4k. Default duration 5, generate_audio true.
-6. To make a video from several stills or clips as references (reference-to-video, keep this character/product/style), call generate_video with reference_images and optional reference_videos. Do not set first_frame. Default aspect_ratio 16:9 unless the user named otherwise. If they attached several stills and asked for a video without pointing at one frame, prefer reference-to-video.
-7. To edit an existing video (replace a person/object, restyle a clip), call generate_video as reference-to-video: put that clip in reference_videos (URL, session video id, or "latest"). Describe the change in the prompt. Optional reference_images for the replacement identity. Do not set first_frame. Default aspect_ratio 16:9 unless the user named otherwise.
-
-## Parameter policy (generate_image and generate_video)
-Fill every required field. uncertain_fields only highlight which values the user may want to edit on the confirmation card. They do not start generation.
-
-Mark a field uncertain when you inferred it and a different choice would materially change the result:
-- aspect_ratio is uncertain if the user did not imply orientation and you are not editing an existing still. Image-to-video stays adaptive — do not mark that uncertain.
-- Do not mark resolution uncertain for 1K vs 2K or for the default 480p; these are preset-tool defaults within the long-form workflow. Registered models use their own schema defaults. Mark it only if the user asked for print, poster, 4K, 1080p, or similar without naming the exact preset.
-- duration is uncertain if they asked for a video without a length.
-- prompt is uncertain only if the subject is still too vague to draw. In that case do not call the tool; call ask_user instead of a markdown list.
-
-You MAY leave uncertain_fields empty when editing a still, when ratio is obvious (phone wallpaper → 9:16, desktop → 16:9, avatar → 1:1), or when the brief is specific.

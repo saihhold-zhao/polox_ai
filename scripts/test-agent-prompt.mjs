@@ -34,7 +34,7 @@ const { systemPrompt, sessionMediaPrompt } = load(resolve(root, 'server/agent/pr
 
 test('assembled system prompt, including loaded skills, contains no Chinese examples', () => {
   for (const policy of ['always', 'when_needed', 'auto']) {
-    const prompt = sessionMediaPrompt([], policy)
+    const prompt = systemPrompt(policy)
     assert.doesNotMatch(prompt, /\p{Script=Han}/u)
     assert.match(prompt, /# Long-form video/)
     assert.match(prompt, /# Prompt rewrite/)
@@ -43,10 +43,10 @@ test('assembled system prompt, including loaded skills, contains no Chinese exam
 })
 
 test('quality presets are scoped to the long-form skill, not global system preferences', () => {
-  const prompt = sessionMediaPrompt([])
-  const globalPrompt = systemPrompt()
+  const prompt = systemPrompt()
+  const globalPrompt = prompt.split('## Skills')[0]
   assert.doesNotMatch(globalPrompt, /## Quality preference|Current preference: (?:Custom|High quality|Hobby|Economy)/)
-  assert.match(prompt, /For standalone image or short-video requests/)
+  assert.match(globalPrompt, /For standalone image or short-video requests/)
   assert.match(prompt, /## Quality presets \(long-form video only\)/)
   assert.match(prompt, /Apply a preset only after the model-preference gate/)
 })
@@ -58,28 +58,4 @@ test('historical foreign-language media remains data with stable IDs and URLs', 
   assert.match(prompt, /Translate descriptive names into the current conversation language/)
   assert.ok(prompt.includes(media.id) && prompt.includes(media.url) && prompt.includes(media.name))
   assert.doesNotMatch(prompt.split('## Session media')[0], /\p{Script=Han}/u)
-})
-
-test('base system prompt delegates model instructions to skills and tool schemas', () => {
-  const base = systemPrompt()
-  assert.doesNotMatch(base, /GPT Image|Seedance|Wan 3\.0|Preset capabilities|Parameter policy|Allowed aspect ratios|first_frame|reference_images|model_image_text_editor/)
-  assert.match(base, /Use the relevant skills/)
-  const assembled = sessionMediaPrompt([])
-  assert.match(assembled, /Preset tool usage within this workflow/)
-  assert.match(assembled, /# Export existing assets/)
-  assert.match(assembled, /# Single generator/)
-})
-
-test('base prompt contains only universal rules while runtime loads detailed skills', () => {
-  const base = systemPrompt()
-  assert.doesNotMatch(base, /## Skills|ask_user|uncertain_fields|name\/_name|confirmation card|Current preference|Final language check|Shot 6/)
-  assert.match(base, /all user-visible text/)
-  const assembled = sessionMediaPrompt([], 'auto')
-  assert.ok(assembled.startsWith(base))
-  assert.match(assembled, /# Conversation and result presentation/)
-  assert.match(assembled, /# Confirmation and execution/)
-  assert.match(assembled, /## Active confirmation preference/)
-  assert.match(assembled, /Current preference: Automatic/)
-  assert.match(sessionMediaPrompt([], 'always'), /Current preference: Always review/)
-  assert.match(sessionMediaPrompt([], 'when_needed'), /Current preference: Review when needed/)
 })

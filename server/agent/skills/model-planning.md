@@ -1,6 +1,6 @@
 # Model selection and parameter planning
 
-Use this skill for model selection and parameter planning, including explicit model names and @[Name](model:id) mentions. All website models are registered as model_* tools with complete input schemas. Explicit model requests take priority. For standalone image or short-video requests, follow single-generator and the selected registered model schema; do not apply long-form quality presets.
+Use this skill for Custom preference, explicit model names and @[Name](model:id) mentions.
 
 1. Read the selected model tool's complete schema before planning. A mention selects an exact model and task, not merely a provider. Preserve it through questions, confirmations, retries and multi-step work. Never silently switch models or use a preset tool instead. When several models are mentioned, assign each to the requested steps; ask_user if their roles are ambiguous.
 2. Build a short execution plan around the user's goal, existing media, required parameters and dependencies. For standalone generation, follow single-generator: ask_user for missing meaningful settings or vague creative intent before generation; a complete brief needs no questionnaire. For longer stories also follow long-form-video, but replace its preset model assumptions with the user's chosen models and their actual duration/reference limits.
