@@ -16,6 +16,10 @@
   <strong>English</strong> | <a href="README.zh-CN.md">简体中文</a>
 </p>
 
+<p align="center">
+  If you run into a problem you cannot resolve, contact me on <a href="https://discord.gg/FwN6s664Dh">Discord</a>.
+</p>
+
 ## Introduction
 
 This is the open-source edition of [PoloX AI](https://polox.ai), a creative platform in the same space as [Lovart](https://lovart.ai) and [Crepal](https://crepal.ai). PoloX takes an **agent-native** approach: agent conversations and an infinite canvas bring creation, generation, and editing into one continuous workflow. Describe what you want, work with the agent, and refine the results on the canvas.
@@ -154,3 +158,7 @@ Thanks to the projects that make PoloX possible:
 ## License
 
 Released under the [MIT License](LICENSE). Original third-party copyright and license notices are retained.
+
+## Contact
+
+If you run into a problem you cannot resolve, contact me on [Discord](https://discord.gg/FwN6s664Dh).

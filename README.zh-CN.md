@@ -16,6 +16,10 @@
   <a href="README.md">English</a> | <strong>简体中文</strong>
 </p>
 
+<p align="center">
+  遇到无法解决的问题，请通过 <a href="https://discord.gg/FwN6s664Dh">Discord</a> 联系我。
+</p>
+
 ## 简介
 
 本项目是 [PoloX AI](https://polox.ai) 的开源版本，与 [Lovart](https://lovart.ai)、[Crepal](https://crepal.ai) 同属 AI 创作平台。PoloX 采用 **Agent 原生**的产品设计：以 Agent 对话与无限画布承载全部交互，将创作、生成与编辑融入连续的工作流程。你只需描述想法，与 Agent 沟通，并在画布上持续完善结果。
@@ -154,3 +158,7 @@ SQLite 数据库保存在 `.data/polox.sqlite`，媒体文件保存在 `.data/me
 ## 开源协议
 
 本项目采用 [MIT 协议](LICENSE)，并保留第三方项目原有的版权与许可声明。
+
+## 联系我
+
+遇到无法解决的问题，请通过 [Discord](https://discord.gg/FwN6s664Dh) 联系我。
