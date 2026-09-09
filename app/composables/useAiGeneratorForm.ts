@@ -29,34 +29,6 @@ export interface GeneratorUploadItem {
   progress: number
   status: 'uploading' | 'ready' | 'error'
   kind: 'image' | 'video' | 'audio'
-  durationSeconds?: number
-}
-function readMediaDuration(file: File) {
-  if (!import.meta.client)
-    return Promise.resolve(0)
-  return new Promise<number>((resolve, reject) => {
-    const objectUrl = URL.createObjectURL(file)
-    const element = document.createElement(file.type.startsWith('audio/') ? 'audio' : 'video')
-    const cleanup = () => {
-      element.removeAttribute('src')
-      element.load()
-      URL.revokeObjectURL(objectUrl)
-    }
-    element.preload = 'metadata'
-    element.onloadedmetadata = () => {
-      const duration = element.duration
-      cleanup()
-      if (!Number.isFinite(duration) || duration <= 0)
-        reject(new Error('Could not read duration'))
-      else
-        resolve(duration)
-    }
-    element.onerror = () => {
-      cleanup()
-      reject(new Error('Could not read duration'))
-    }
-    element.src = objectUrl
-  })
 }
 function parseAcceptList(accept: string) {
   return accept.split(',').map(part => part.trim()).filter(Boolean)
@@ -127,7 +99,6 @@ export function uploadFileWithProgress(file: File, onProgress: (percent: number)
 }) {
   return new Promise<{
     url: string
-    duration?: number
   }>((resolve, reject) => {
     const xhr = new XMLHttpRequest()
     xhrRef.current = xhr
@@ -144,7 +115,6 @@ export function uploadFileWithProgress(file: File, onProgress: (percent: number)
       try {
         const data = JSON.parse(xhr.responseText) as {
           url?: string
-          duration?: number
         }
         if (!data.url) {
           reject(new Error('Upload did not return a URL'))
@@ -152,7 +122,6 @@ export function uploadFileWithProgress(file: File, onProgress: (percent: number)
         }
         resolve({
           url: data.url,
-          duration: typeof data.duration === 'number' && Number.isFinite(data.duration) ? data.duration : undefined,
         })
       }
       catch {
@@ -378,7 +347,6 @@ export function useAiGeneratorForm() {
   watch(() => selectedModel.value?.id, () => {
     initializeFormValues(true)
   }, { immediate: true })
-  const inputVideoDuration = computed(() => itemsForField('reference_video_urls').filter(item => item.status === 'ready').reduce((total, item) => total + (item.durationSeconds || 0), 0))
   function setFieldValue(key: string, value: unknown) {
     const nextValues: AiFormValues = {
       ...formValues.value,
@@ -401,17 +369,7 @@ export function useAiGeneratorForm() {
     const accept = uploadField.property['x-accept'] || DEFAULT_IMAGE_ACCEPT
     const maxItems = uploadField.property.maxItems ?? 10
     const remaining = Math.max(0, maxItems - itemsForField(fieldKey).length)
-    const accepted: Array<{
-      file: File
-      durationSeconds?: number
-    }> = []
-    const minSeconds = uploadField.property['x-min-seconds'] ?? 2
-    const maxSeconds = uploadField.property['x-max-seconds'] ?? 30
-    const maxTotalSeconds = uploadField.property['x-max-total-seconds'] ?? 30
-    const currentVideoSeconds = (fieldKey === 'reference_video_urls' || fieldKey === 'video_urls')
-      ? itemsForField(fieldKey).reduce((total, item) => total + (item.durationSeconds || 0), 0)
-      : 0
-    let extraVideoSeconds = 0
+    const accepted: File[] = []
     for (const file of Array.from(files).slice(0, remaining)) {
       const maxBytes = uploadField.property['x-max-bytes'] || maxBytesForType(file.type)
       if (!fileMatchesAccept(file, accept)) {
@@ -422,30 +380,11 @@ export function useAiGeneratorForm() {
         toast.error(acceptHint(accept, maxBytes))
         continue
       }
-      let durationSeconds: number | undefined
-      if ((fieldKey === 'reference_video_urls' || fieldKey === 'video_urls')) {
-        try {
-          durationSeconds = await readMediaDuration(file)
-          if (durationSeconds < minSeconds || durationSeconds > maxSeconds) {
-            toast.error(`Each reference video must be ${minSeconds}-${maxSeconds} seconds`)
-            continue
-          }
-          if (currentVideoSeconds + extraVideoSeconds + durationSeconds > maxTotalSeconds) {
-            toast.error(`Reference videos cannot exceed ${maxTotalSeconds} seconds in total`)
-            continue
-          }
-          extraVideoSeconds += durationSeconds
-        }
-        catch {
-          toast.error('Could not read this video. Try another MP4 or MOV file.')
-          continue
-        }
-      }
-      accepted.push({ file, durationSeconds })
+      accepted.push(file)
     }
-    await Promise.all(accepted.map(item => startFileUpload(fieldKey, item.file, item.durationSeconds)))
+    await Promise.all(accepted.map(file => startFileUpload(fieldKey, file)))
   }
-  async function startFileUpload(fieldKey: string, file: File, durationSeconds?: number) {
+  async function startFileUpload(fieldKey: string, file: File) {
     const id = crypto.randomUUID()
     const previewUrl = URL.createObjectURL(file)
     const xhrRef: {
@@ -460,7 +399,6 @@ export function useAiGeneratorForm() {
         progress: 0,
         status: 'uploading',
         kind: uploadKindForType(file.type),
-        durationSeconds,
       },
     ])
     try {
@@ -470,31 +408,10 @@ export function useAiGeneratorForm() {
       if (xhrRef.current)
         uploadRequests.set(id, xhrRef.current)
       const uploaded = await uploadPromise
-      const measuredDuration = uploaded.duration ?? durationSeconds
-      if ((fieldKey === 'reference_video_urls' || fieldKey === 'video_urls') && measuredDuration != null) {
-        const uploadField = fields.value.find(field => field.key === fieldKey && field.widget === 'upload')
-        const minSeconds = uploadField?.property['x-min-seconds'] ?? 2
-        const maxSeconds = uploadField?.property['x-max-seconds'] ?? 30
-        const maxTotalSeconds = uploadField?.property['x-max-total-seconds'] ?? 30
-        const otherSeconds = itemsForField(fieldKey)
-          .filter(item => item.id !== id)
-          .reduce((total, item) => total + (item.durationSeconds || 0), 0)
-        if (measuredDuration < minSeconds || measuredDuration > maxSeconds) {
-          toast.error(`Each reference video must be ${minSeconds}-${maxSeconds} seconds`)
-          removeUploadedItem(fieldKey, id)
-          return
-        }
-        if (otherSeconds + measuredDuration > maxTotalSeconds) {
-          toast.error(`Reference videos cannot exceed ${maxTotalSeconds} seconds in total`)
-          removeUploadedItem(fieldKey, id)
-          return
-        }
-      }
       patchUploadItem(fieldKey, id, {
         remoteUrl: uploaded.url,
         progress: 100,
         status: 'ready',
-        durationSeconds: measuredDuration,
       })
       syncUploadField(fieldKey)
     }
@@ -615,7 +532,6 @@ export function useAiGeneratorForm() {
           task: selectedTask.value,
           projectId: selectedProjectId.value || undefined,
           input: payload,
-          inputVideoDuration: inputVideoDuration.value,
         },
       })
       upsertJob(job)
@@ -671,7 +587,6 @@ export function useAiGeneratorForm() {
     deleteConfirmOpen,
     requestDeleteJob,
     confirmDeleteJob,
-    inputVideoDuration,
     setFieldValue,
     addUploadedFiles,
     removeUploadedItem,

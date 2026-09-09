@@ -1,6 +1,5 @@
 import { uploadFalFile } from '../utils/falFiles'
 import { saveMediaFile } from '../utils/localMedia'
-import { getVideoDurationFromBuffer } from '../utils/videoDuration'
 
 const MAX_IMAGE_BYTES = 30 * 1024 * 1024
 const MAX_VIDEO_BYTES = 200 * 1024 * 1024
@@ -55,10 +54,7 @@ export default defineEventHandler(async (event) => {
   }
   const key = `generator/uploads/${crypto.randomUUID()}.${media.extension}`
   const bytes = new Uint8Array(await file.arrayBuffer())
-  const duration = file.type.startsWith('video/')
-    ? await getVideoDurationFromBuffer(bytes, media.extension)
-    : undefined
   await saveMediaFile(key, bytes, file.type)
   const url = await uploadFalFile(bytes, file.type, `upload.${media.extension}`)
-  return duration == null ? { url } : { url, duration }
+  return { url }
 })

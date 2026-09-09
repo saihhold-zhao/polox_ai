@@ -8,7 +8,6 @@ import { toPublicJob } from '../../utils/generationResults'
 import { toPublicApiError } from '../../utils/httpError'
 import { resolveProject } from '../../utils/projects'
 import { connectDatabase } from '../../utils/sqlite'
-import { measureReferenceVideoSeconds, referenceVideoDurationLimits } from '../../utils/videoDuration'
 
 export default defineEventHandler(async (event) => {
   const body = await readBody<{
@@ -28,38 +27,6 @@ export default defineEventHandler(async (event) => {
   }
   const rawInput = body?.input && typeof body.input === 'object' ? body.input : {}
   const input = sanitizeGenerateInput(model, rawInput)
-  const videoInput = input.reference_video_urls || input.video_urls
-  const referenceVideos = Array.isArray(videoInput)
-    ? videoInput.filter((item): item is string => typeof item === 'string')
-    : []
-  const hasVideoInput = referenceVideos.length > 0
-  const measuredVideos = hasVideoInput
-    ? await measureReferenceVideoSeconds(referenceVideos)
-    : { durations: [] as number[], total: 0 }
-  const limits = referenceVideoDurationLimits(model)
-  if (hasVideoInput) {
-    if (measuredVideos.durations.some(seconds => seconds < limits.minEach || seconds > limits.maxEach)) {
-      throw createError({
-        statusCode: 400,
-        statusMessage: `Each reference video must be ${limits.minEach}-${limits.maxEach} seconds`,
-      })
-    }
-    if (measuredVideos.total > limits.maxTotal) {
-      throw createError({
-        statusCode: 400,
-        statusMessage: `Reference videos cannot exceed ${limits.maxTotal} seconds in total`,
-      })
-    }
-  }
-  const inputVideoDuration = hasVideoInput
-    ? Math.min(limits.maxTotal, measuredVideos.total)
-    : 0
-  if (model.startsWith('wan/') && hasVideoInput && inputVideoDuration + Number(input.duration || 0) > 30) {
-    throw createError({
-      statusCode: 400,
-      statusMessage: 'Input video plus output duration cannot exceed 30 seconds',
-    })
-  }
   await connectDatabase()
   const project = await resolveProject(body?.projectId)
   const requestBody = { model: falEndpoint(model, input), input }

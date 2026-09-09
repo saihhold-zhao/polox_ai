@@ -20,9 +20,9 @@ Model inference uses external providers: relevant inputs are sent to OpenRouter 
 
 Use Node.js 22.20 or newer and pnpm.
 
-### Install FFmpeg for video features
+### Install FFmpeg for video concatenation
 
-Install FFmpeg, including `ffprobe`, on the machine running the Nuxt server. Video uploads and reference-video duration checks require `ffprobe`; video concatenation requires both `ffmpeg` and `ffprobe`. These system tools are not installed by `pnpm install`. The application can start without them, but these video features will fail.
+For local video concatenation, install FFmpeg, including `ffprobe`, on the machine running the Nuxt server. These system tools are not installed by `pnpm install`. Uploads and generation do not require them. PoloX does not probe or enforce reference-video duration limits locally; model providers may enforce their own input requirements.
 
 macOS (Homebrew):
 

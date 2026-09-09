@@ -7,7 +7,6 @@ import { falEndpoint } from '../utils/falInput'
 import { sanitizeGenerateInput } from '../utils/generateInput'
 import { refreshGenerationJob } from '../utils/generationPipeline'
 import { toPublicJob } from '../utils/generationResults'
-import { measureReferenceVideoSeconds, referenceVideoDurationLimits } from '../utils/videoDuration'
 import { confirmedTextEdit } from './imageTextEditor'
 import { confirmedLayerSelections, layerSplitNeedsPlan } from './layerSplitBrief'
 import { persistNow, upsertImage } from './session'
@@ -89,13 +88,6 @@ export async function prepareModelGeneration(tool: string, json: string, session
   }
   const validated = validateAgentModelInput(model, raw)
   const input = sanitizeGenerateInput(model.id, validated)
-  const videos = Array.isArray(input.reference_video_urls || input.video_urls) ? (input.reference_video_urls || input.video_urls) as string[] : []
-  const measured = videos.length ? await measureReferenceVideoSeconds(videos) : { durations: [], total: 0 }
-  const limits = referenceVideoDurationLimits(model.id)
-  if (measured.durations.some(seconds => seconds < limits.minEach || seconds > limits.maxEach) || measured.total > limits.maxTotal)
-    throw new Error('Reference video duration is outside this model’s limits. Ask for a compatible clip.')
-  if (model.id.startsWith('wan/') && measured.total + Number(input.duration || 0) > 30)
-    throw new Error('Input video plus output duration cannot exceed 30 seconds')
   return {
     modelId: model.id,
     name: String(raw._name || model.name).slice(0, 100),

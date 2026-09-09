@@ -15,9 +15,6 @@ export interface SchemaProperty {
   'x-label'?: string
   'x-accept'?: string
   'x-max-bytes'?: number
-  'x-min-seconds'?: number
-  'x-max-seconds'?: number
-  'x-max-total-seconds'?: number
   'items'?: SchemaProperty
 }
 

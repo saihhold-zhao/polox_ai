@@ -23,14 +23,6 @@ const mediaKind = computed(() => {
     return 'audio'
   return 'image'
 })
-const isDev = import.meta.dev
-
-function formatDuration(seconds?: number) {
-  if (seconds == null || !Number.isFinite(seconds) || seconds <= 0)
-    return ''
-  return `${seconds.toFixed(2)}s`
-}
-
 function removeLabel(item: GeneratorUploadItem) {
   if (item.status === 'uploading')
     return 'Cancel upload'
@@ -88,13 +80,6 @@ function removeLabel(item: GeneratorUploadItem) {
           >
             <Music class="size-5" />
           </div>
-
-          <span
-            v-if="isDev && item.kind === 'video' && formatDuration(item.durationSeconds)"
-            class="pointer-events-none absolute inset-x-0 bottom-0 bg-black/65 px-1 py-0.5 text-center text-[10px] leading-none tabular-nums text-white"
-          >
-            {{ formatDuration(item.durationSeconds) }}
-          </span>
 
           <div
             v-if="item.status === 'uploading'"

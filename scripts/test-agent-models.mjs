@@ -84,7 +84,6 @@ const api = load('server/agent/models.ts', {
     './slots': { acquireGenerationSlot: async (args) => { slotArgs = args; return { queued: false }; } },
     '../models/generationJob': { GenerationJob: { findOne: async () => storedJob } },
     '../utils/generationPipeline': { refreshGenerationJob: async (job) => job },
-    '../utils/videoDuration': { measureReferenceVideoSeconds: async (urls) => ({ durations: urls.map(() => 5), total: urls.length * 5 }), referenceVideoDurationLimits: () => ({ minEach: 1, maxEach: 30, maxTotal: 30 }) },
 }, { console });
 test('every website model has a unique valid tool and matching required parameters', () => {
     const website = load('shared/constants/aiModels.ts').AI_MODELS;
