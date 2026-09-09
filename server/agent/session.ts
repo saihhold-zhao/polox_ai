@@ -346,7 +346,7 @@ export function createSession(options?: {
     projectId: options?.projectId || '',
     bffUrl: options?.bffUrl || '',
     quality: 'hobby',
-    confirmPolicy: 'auto',
+    confirmPolicy: 'always',
     updatedAt: Date.now(),
   }
   sessions.set(session.id, session)

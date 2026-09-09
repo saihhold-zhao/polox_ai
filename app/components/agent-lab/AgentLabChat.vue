@@ -81,7 +81,7 @@ const emit = defineEmits<{
 }>()
 const draft = defineModel<string>('draft', { default: '' })
 const qualityPreference = defineModel<AgentQuality>('qualityPreference', { default: 'hobby' })
-const confirmPolicy = defineModel<AgentConfirmPolicy>('confirmPolicy', { default: 'auto' })
+const confirmPolicy = defineModel<AgentConfirmPolicy>('confirmPolicy', { default: 'always' })
 const selectedModels = computed(() => readModelMentions(draft.value).map(id => AGENT_MODELS.find(model => model.id === id)!))
 const composerText = computed({
   get: () => stripModelMentions(draft.value),
