@@ -1,8 +1,10 @@
 # PoloX Open Source
 
-A local AI creative workspace for image and video generation, Agent conversations, and an infinite canvas. Built with Nuxt, Vue, and SQLite, PoloX connects to OpenRouter and fal using your own API keys and keeps projects, generation history, conversations, and media on your machine. There are no accounts, login screens, subscriptions or account credit balances.
+An open-source, agent-native platform for multimodal AI generation, built on DeepSeek Harness. Every interaction lives in agent conversations and an infinite canvas, unifying creation, generation, and editing.
 
-PoloX 是一个本地运行的 AI 创作工作台，将图片与视频生成、Agent 对话和无限画布整合到同一个项目空间。通过自己的 OpenRouter 和 fal API 密钥连接模型服务，项目、生成记录、对话与媒体文件保存在本地，无需注册或订阅应用账号。模型推理使用外部服务，相关输入会发送给服务提供商，API 使用费用由提供商收取。
+PoloX 是一个开源的 Agent 原生多模态 AI 生成平台，基于 DeepSeek Harness 构建，以 Agent 对话与无限画布承载全部交互，统一创作、生成与编辑体验。
+
+Built with Nuxt, Vue, and SQLite, PoloX connects to OpenRouter and fal using your own API keys and stores projects, generation history, conversations, and media locally. There are no accounts, login screens, subscriptions, or account credit balances.
 
 ## Features
 

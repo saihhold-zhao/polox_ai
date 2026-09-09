@@ -3,7 +3,7 @@
   "type": "module",
   "version": "1.0.2",
   "packageManager": "pnpm@10.10.0",
-  "description": "A local AI creative workspace for image and video generation, Agent conversations, and an infinite canvas.",
+  "description": "An open-source, agent-native platform for multimodal AI generation, built on DeepSeek Harness. Every interaction lives in agent conversations and an infinite canvas, unifying creation, generation, and editing.",
   "author": "Dian Pratama <dianpratama2@gmail.com>",
   "license": "MIT",
   "homepage": "https://github.com/9nvw7f94ym-eng/polox_os",
