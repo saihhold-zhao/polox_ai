@@ -1,4 +1,4 @@
-# PoloX Open Source
+# PoloX AI — Multimodal AI Agent
 
 An open-source, agent-native platform for multimodal AI generation, built on DeepSeek Harness. Every interaction lives in agent conversations and an infinite canvas, unifying creation, generation, and editing.
 
