@@ -20,6 +20,34 @@ Model inference uses external providers: relevant inputs are sent to OpenRouter 
 
 Use Node.js 22.20 or newer and pnpm.
 
+### Install FFmpeg for video features
+
+Install FFmpeg, including `ffprobe`, on the machine running the Nuxt server. Video uploads and reference-video duration checks require `ffprobe`; video concatenation requires both `ffmpeg` and `ffprobe`. These system tools are not installed by `pnpm install`. The application can start without them, but these video features will fail.
+
+macOS (Homebrew):
+
+```sh
+brew install ffmpeg
+```
+
+Ubuntu / Debian:
+
+```sh
+sudo apt update
+sudo apt install ffmpeg
+```
+
+On Windows, install an FFmpeg build that includes both tools and add its `bin` directory to your `PATH`.
+
+Verify that both commands are available in the environment used to start the server, then restart the server if it was already running:
+
+```sh
+ffmpeg -version
+ffprobe -version
+```
+
+### Start the application
+
 ```sh
 pnpm install
 pnpm dev
