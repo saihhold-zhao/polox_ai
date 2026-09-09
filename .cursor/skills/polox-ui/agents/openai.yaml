@@ -1,0 +1,4 @@
+interface:
+  display_name: "Polox UI"
+  short_description: "Build interfaces that match the Polox dark creative workspace"
+  default_prompt: "Use $polox-ui to design or update this Nuxt interface consistently."

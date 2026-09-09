@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  workflow_dispatch:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - id: checkout
+        name: Checkout
+        uses: actions/checkout@v4
+
+      - id: setup-ni
+        name: Setup
+        run: npm i -g @antfu/ni
+
+      - id: install-deps
+        name: Install dependencies
+        run: nci
+
+      - name: Lint
+        run: nr lint

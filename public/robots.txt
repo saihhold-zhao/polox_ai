@@ -1,0 +1,6 @@
+User-agent: *
+Allow: /
+Disallow: /projects
+Disallow: /agent-lab
+
+Sitemap: https://polox.ai/sitemap.xml
