@@ -3,6 +3,9 @@ const props = defineProps<{
   url: string
   alt: string
   video?: boolean
+  audio?: boolean
+  document?: boolean
+  name?: string
   playing?: boolean
 }>()
 
@@ -19,7 +22,7 @@ function reportDimensions(event: Event) {
 }
 
 const failed = ref(false)
-const element = ref<HTMLImageElement | HTMLVideoElement>()
+const element = ref<HTMLImageElement | HTMLVideoElement | HTMLAudioElement>()
 
 watch([() => props.playing, element], ([playing, media]) => {
   if (!(media instanceof HTMLVideoElement))
@@ -28,6 +31,11 @@ watch([() => props.playing, element], ([playing, media]) => {
     void media.play().catch(() => {})
   else
     media.pause()
+})
+
+onMounted(() => {
+  if ((props.audio || props.document) && !failed.value)
+    emit('dimensions', { width: 480, height: props.document ? 360 : 120 })
 })
 
 onErrorCaptured(() => {
@@ -71,6 +79,34 @@ function retry() {
       @loadedmetadata="reportDimensions"
       @error="failed = true"
     />
+    <div
+      v-else-if="props.audio && !failed"
+      class="flex size-full flex-col items-center justify-center gap-3 bg-muted/40 px-4"
+    >
+      <Icon name="i-lucide-music" class="size-8 text-muted-foreground" />
+      <audio
+        :key="url"
+        ref="element"
+        :src="url"
+        :aria-label="alt"
+        controls
+        preload="metadata"
+        class="w-full max-w-md"
+        @loadedmetadata="reportDimensions"
+        @error="failed = true"
+        @pointerdown.stop
+        @click.stop
+      />
+    </div>
+    <div
+      v-else-if="props.document && !failed"
+      class="flex size-full flex-col items-center justify-center gap-3 bg-muted/40 px-4 text-center"
+    >
+      <Icon name="i-lucide-file-text" class="size-10 text-muted-foreground" />
+      <p class="line-clamp-3 w-full max-w-sm break-all text-sm text-muted-foreground" :title="name || alt">
+        {{ name || alt || 'Document' }}
+      </p>
+    </div>
     <img
       v-else-if="!failed"
       :key="url"

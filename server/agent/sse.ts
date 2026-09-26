@@ -46,6 +46,7 @@ export function createAgentEventStream(
         )
         if (!aborted && !closed) {
           const message = error instanceof Error ? error.message : 'Agent service error'
+          console.error('[agent sse error]', message.slice(0, 500))
           emit({ type: 'error', message })
           emit({ type: 'done' })
         }

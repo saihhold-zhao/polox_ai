@@ -24,7 +24,7 @@ export default defineEventHandler(async (event) => {
   }
 
   ensureUserSkillsReady()
-  const payload = serializeSkillExport(id)
+  const payload = await serializeSkillExport(id)
   if (!payload)
     throw createError({ statusCode: 404, statusMessage: 'User skill not found' })
   return payload

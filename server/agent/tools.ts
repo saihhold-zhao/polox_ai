@@ -1,3 +1,4 @@
+import { parseSkillCategoryInput, type SkillCategory } from '~~/shared/utils/skillCategory'
 import type {
   AgentImage,
   AskUserArgs,
@@ -14,6 +15,9 @@ import type {
 } from './types'
 import { standaloneImageEditQuestions, withCustomChoiceOption } from '~~/shared/utils/agentChoices'
 import { exportZipTool } from './exportZip'
+import { measureVideoDurationTool } from './measureVideoDuration'
+import { extractVideoFrameTool } from './extractVideoFrame'
+import { documentTools } from './documentTools'
 import { gptImage2ComboError, isGptImage2AspectRatio, isGptImage2Resolution } from './gptImage2'
 import { isSeedance2AspectRatio, isSeedance2Resolution } from './seedance2'
 import { SKETCH_QUESTIONS } from './sketchBrief'
@@ -24,11 +28,14 @@ export const GENERATE_IMAGE_TOOL = 'generate_image'
 export const REMOVE_BACKGROUND_TOOL = 'remove_background'
 export const GENERATE_VIDEO_TOOL = 'generate_video'
 export const CONCAT_VIDEO_TOOL = 'concat_videos'
+export { EXTRACT_VIDEO_FRAME_TOOL } from './extractVideoFrame'
 export const ASK_USER_TOOL = 'ask_user'
+export const REQUEST_VOICE_RECORDING_TOOL = 'request_voice_recording'
 export const LOAD_SKILL_TOOL = 'load_skill'
 export const SAVE_USER_SKILL_TOOL = 'save_user_skill'
 export const CHECK_SKILL_ID_TOOL = 'check_skill_id'
 export const EXIT_SKILL_CREATOR_TOOL = 'exit_skill_creator'
+export const SET_SKILL_COVER_TOOL = 'set_skill_cover'
 export const MAX_CONCAT_CLIPS = 20
 export const MAX_ASK_QUESTIONS = 6
 export const MAX_ASK_OPTIONS = 8
@@ -36,6 +43,9 @@ export const MAX_ASK_OPTIONS = 8
 export const openAiTools = [
   inspectWebsiteTool,
   exportZipTool,
+  measureVideoDurationTool,
+  extractVideoFrameTool,
+  ...documentTools,
   {
     type: 'function',
     function: {
@@ -253,6 +263,31 @@ export const openAiTools = [
   {
     type: 'function',
     function: {
+      name: REQUEST_VOICE_RECORDING_TOOL,
+      description: 'Open the in-chat microphone recorder so the user can record a short voice sample. Pass a simple 2-sentence reading script in the user-selected spoken language (English or Chinese/中文, etc.) for them to read aloud — do not hardcode English when another language was chosen. Must run alone (do not mix with ask_user, generation, or concat). The UI shows only the script and recorder (no choice tiles). Waits until the user taps Finish; the server converts the recording to MP3 and stores it locally. Tool result includes an MP3 voiceUrl (format audio/mpeg) ready for video reference_audios. Do not invent a URL and do not ask the user to re-upload for format reasons when ok is true.',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          script: {
+            type: 'string',
+            description: 'A simple random 2-sentence reading script in the locked spoken language (English, Chinese/中文, etc.) for the user to read aloud (about 8–15 seconds when spoken). Invent a neutral everyday sample in that language; do not hardcode English-only when Chinese or another language is locked. Do not reuse the talking-avatar speech script here.',
+            minLength: 16,
+            maxLength: 400,
+          },
+          prompt: {
+            type: 'string',
+            description: 'Optional short intro above the recorder, in the user\'s preferred language.',
+          },
+        },
+        required: ['script'],
+      },
+    },
+  },
+
+  {
+    type: 'function',
+    function: {
       name: LOAD_SKILL_TOOL,
       description: 'Load the full body of a skill by id into context. Free and read-only. Use when the user types /skill-id or when a catalog summary is not enough. Does not spend money and does not require generation confirmation.',
       parameters: {
@@ -276,8 +311,24 @@ export const openAiTools = [
         properties: {
           markdown: { type: 'string', description: 'Full SKILL.md including YAML frontmatter and body.' },
           enabled: { type: 'boolean', description: 'Whether the skill is enabled in the catalog after save. Default true for new user skills; false for imports.' },
+          category: { type: 'string', enum: ['utility', 'fun'], description: 'Skill sub-category shown on the homepage Skills tabs: "utility" (functional / productivity) or "fun" (entertainment). Right before the final exit, judge the category yourself, ask the user with ask_user question id skill_category (your judged option first, set as recommended, with a one-line reason), then pass the option the USER picked here on the final save. Omit to keep the current category (new skills default to utility).' },
         },
         required: ['markdown'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: SET_SKILL_COVER_TOOL,
+      description: 'Set the Skills / Home card cover of the skill bound to this skill project. Use in skill Test mode when the user asks to use a generated or uploaded image as the skill cover. Pass the URL of a finished image from this session; temporary provider URLs are copied to local storage first. Does not require /skill-creator. Free; does not generate media.',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          url: { type: 'string', description: 'URL of a finished still image from this session (generated or uploaded).' },
+        },
+        required: ['url'],
       },
     },
   },
@@ -311,6 +362,11 @@ export const openAiTools = [
             enum: ['save_and_exit', 'test_now'],
             description: 'save_and_exit → /skills after Enable; test_now → open Test mode after Enable.',
           },
+          category: {
+            type: 'string',
+            enum: ['utility', 'fun'],
+            description: 'Optional: the category the user chose in the skill_category ask_user (utility | fun). Persisted on the bound skill before exit.',
+          },
         },
         required: ['action'],
       },
@@ -327,7 +383,7 @@ function isHttpUrl(value: string) {
 }
 
 function isStillAsset(image: AgentImage) {
-  return image.status === 'success' && isHttpUrl(image.url) && image.kind !== 'video'
+  return image.status === 'success' && isHttpUrl(image.url) && image.kind !== 'video' && image.kind !== 'audio' && image.kind !== 'document'
 }
 
 export function latestStill(images: AgentImage[]) {
@@ -584,8 +640,8 @@ export function resolveGenerateVideoArgs(args: GenerateVideoArgs, images: AgentI
     uncertain_fields: args.uncertain_fields,
   }
 
-  const referenceImages = args.reference_images.map(token => resolveSessionUrl(token, images, 'reference_images').url)
-  const referenceVideos = args.reference_videos.map(token => resolveSessionVideo(token, images, 'reference_videos').url)
+  const referenceImages = (args.reference_images || []).map(token => resolveSessionUrl(token, images, 'reference_images').url)
+  const referenceVideos = (args.reference_videos || []).map(token => resolveSessionVideo(token, images, 'reference_videos').url)
 
   if (referenceImages.length || referenceVideos.length) {
     if (referenceImages.length)
@@ -718,7 +774,7 @@ export function parseCheckSkillIdArgs(raw: string): { id?: string, name?: string
   }
 }
 
-export function parseExitSkillCreatorArgs(raw: string): { action: 'save_and_exit' | 'test_now' } {
+export function parseExitSkillCreatorArgs(raw: string): { action: 'save_and_exit' | 'test_now', category?: SkillCategory } {
   let parsed: Record<string, unknown>
   try {
     parsed = JSON.parse(raw || '{}') as Record<string, unknown>
@@ -727,7 +783,8 @@ export function parseExitSkillCreatorArgs(raw: string): { action: 'save_and_exit
     throw new Error('exit_skill_creator arguments were not valid JSON')
   }
   const action = parsed.action === 'test_now' ? 'test_now' as const : 'save_and_exit' as const
-  return { action }
+  const category = parseSkillCategoryInput(parsed.category) || undefined
+  return category ? { action, category } : { action }
 }
 
 function parseAskOption(raw: unknown, index: number, seen: Set<string>): ChoiceOption | null {
@@ -835,6 +892,42 @@ function parseAskQuestion(raw: unknown, index: number, seen: Set<string>): Choic
   if (unique === 'exit_skill_creator')
     return sanitizeExitSkillCreatorQuestion(base)
   return base
+}
+
+
+export function parseRequestVoiceRecordingArgs(raw: string): { script: string, prompt: string } {
+  let parsed: Record<string, unknown>
+  try {
+    parsed = JSON.parse(raw) as Record<string, unknown>
+  }
+  catch {
+    throw new Error('request_voice_recording arguments were not valid JSON')
+  }
+  const script = clipAsk(parsed.script, 400).trim()
+  if (script.length < 16)
+    throw new Error('request_voice_recording needs a script of at least 16 characters')
+  return {
+    script,
+    prompt: clipAsk(parsed.prompt ?? parsed.intro, 500) || 'Record a short voice sample. Read the script aloud, then tap Finish.',
+  }
+}
+
+export function voiceRecordingAskArgs(script: string, prompt = ''): AskUserArgs {
+  const reading = clipAsk(script, 400).trim()
+  const intro = clipAsk(prompt, 500) || 'Record a short voice sample. Read the script aloud, then tap Finish.'
+  return {
+    prompt: intro,
+    recommendation: 'Record the sample so the video can match your voice.',
+    questions: [{
+      id: 'voice_record',
+      title: 'Voice sample',
+      prompt: `${intro}\n\n"${reading}"`,
+      script: reading,
+      options: [
+        { id: 'recorded', label: 'Finish' },
+      ],
+    }],
+  }
 }
 
 export function parseAskUserArgs(raw: string): AskUserArgs {

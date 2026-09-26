@@ -13,7 +13,7 @@ export function assetName(item: NamedAsset): string {
     return `${name ? `${name} · ` : ''}${summary.slice(0, 90)}${summary.length > 90 ? '…' : ''}`
   if (name)
     return name
-  const prefix = item.videoMode === 'concat' ? 'Final film' : item.kind === 'video' ? 'Video' : item.kind === 'cutout' ? 'Cutout' : item.kind === 'upload' ? 'Reference' : 'Image'
+  const prefix = item.videoMode === 'concat' ? 'Final film' : item.kind === 'video' ? 'Video' : item.kind === 'audio' ? 'Audio' : item.kind === 'document' ? 'Document' : item.kind === 'cutout' ? 'Cutout' : item.kind === 'upload' ? 'Reference' : 'Image'
   return `${prefix} · ${item.id.replace(/^agent_/, '').slice(-10)}`
 }
 
@@ -21,7 +21,7 @@ export function allocateAssetName(item: NamedAsset, assets: NamedAsset[]): strin
   const previous = assets.find(asset => asset.id === item.id)?.name
   if (previous)
     return previous
-  const prefix = item.videoMode === 'concat' ? 'final_film' : item.kind === 'video' ? 'shot' : item.kind === 'cutout' ? 'cutout' : item.kind === 'upload' ? 'reference' : 'image'
+  const prefix = item.videoMode === 'concat' ? 'final_film' : item.kind === 'video' ? 'shot' : item.kind === 'audio' ? 'audio' : item.kind === 'document' ? 'document' : item.kind === 'cutout' ? 'cutout' : item.kind === 'upload' ? 'reference' : 'image'
   const base = cleanAssetName(item.name) || prefix
   const used = new Set(assets.filter(asset => asset.id !== item.id).map(asset => asset.name?.toLowerCase()))
   if (item.name && !used.has(base.toLowerCase()))

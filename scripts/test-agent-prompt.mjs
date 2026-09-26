@@ -46,8 +46,11 @@ test('quality presets are scoped to the long-form skill, not global system prefe
   const prompt = systemPrompt()
   const globalPrompt = prompt.split('## Skills')[0]
   assert.doesNotMatch(globalPrompt, /## Quality preference|Current preference: (?:Custom|High quality|Hobby|Economy)/)
-  assert.match(prompt, /## Quality presets \(long-form video only\)/)
-  assert.match(prompt, /Apply a preset only after the model-preference gate/)
+  // long-form-video now loads on demand (load_skill or /long-form-video).
+  assert.doesNotMatch(prompt, /## Quality presets \(long-form video only\)/)
+  const loaded = systemPrompt('always', { loadedSkillIds: ['long-form-video'] })
+  assert.match(loaded, /## Quality presets \(long-form video only\)/)
+  assert.match(loaded, /Apply a preset only after the model-preference gate/)
 })
 
 test('historical foreign-language media remains data with stable IDs and URLs', () => {
@@ -57,4 +60,44 @@ test('historical foreign-language media remains data with stable IDs and URLs', 
   assert.match(prompt, /Translate descriptive names into the current conversation language/)
   assert.ok(prompt.includes(media.id) && prompt.includes(media.url) && prompt.includes(media.name))
   assert.doesNotMatch(prompt.split('## Session media')[0], /\p{Script=Han}/u)
+})
+
+test('skill catalog is compact and caps user skills', () => {
+  const userCatalog = Array.from({ length: 35 }, (_, index) => ({
+    id: `user-skill-${String(index).padStart(2, '0')}`,
+    name: `User skill ${index}`,
+    description: 'x'.repeat(400),
+    triggers: [],
+    visibility: 'catalog',
+  }))
+  const prompt = systemPrompt('always', { userCatalog })
+  assert.match(prompt, /- \/user-skill-00 — User skill 0: x+…/)
+  assert.match(prompt, /- \/user-skill-29 — /)
+  assert.doesNotMatch(prompt, /- \/user-skill-30 — /)
+  assert.match(prompt, /and 5 more enabled user skills not listed/)
+  assert.doesNotMatch(prompt, /x{200}/)
+  assert.match(prompt, /- \/long-form-video — /)
+  assert.doesNotMatch(prompt, /Call load_skill\(\{ id: "image-editing" \}\) before following its full instructions/)
+})
+
+test('Document tools are ask-first: no proactive read on attach-only or vague look-over', () => {
+  const prompt = systemPrompt('auto')
+  assert.match(prompt, /ask-first/i)
+  assert.match(prompt, /acknowledge the file name\(s\) and ask what they need/i)
+  assert.match(prompt, /call zero document_meta/)
+  assert.match(prompt, /Only after they state a concrete need/)
+  assert.doesNotMatch(prompt, /when documents are attached, call document_meta/)
+  const media = {
+    id: 'doc-1',
+    name: 'brief.xlsx',
+    kind: 'document',
+    status: 'success',
+    url: 'https://example.com/brief.xlsx',
+  }
+  const withDocs = sessionMediaPrompt([media], 'auto')
+  assert.match(withDocs, /Ask-first/)
+  assert.match(withDocs, /acknowledge the file name\(s\) and ask what to do/)
+  assert.match(withDocs, /call zero document_meta/)
+  assert.match(withDocs, /only after a concrete content request/i)
+  assert.doesNotMatch(withDocs, /when documents are attached, call document_meta/)
 })

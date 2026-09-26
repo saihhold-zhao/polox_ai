@@ -2,6 +2,8 @@ import type { ChatMessage, ToolCall } from './types'
 import { readStoredMedia } from '../utils/localMedia'
 import { uploadWavespeedFile } from '../utils/wavespeed'
 import { agentEnv } from './env'
+import { hasLlmImages, isLlmImageSizeError, LLM_IMAGE_BUDGET, LLM_IMAGE_RETRY_BUDGET } from './llmImageBudget'
+import { budgetLlmImages } from './llmImageCopies'
 
 /** Strip layer-selection bbox coordinates before the LLM sees tool results. Server session keeps full regions. */
 function messagesForLlm(messages: ChatMessage[]): ChatMessage[] {
@@ -129,32 +131,58 @@ async function providerMessages(messages: ChatMessage[]) {
   }))
 }
 
+/**
+ * POST with the image budget applied to a copy of the messages (stored sessions are never
+ * rewritten). Local images are downscaled and uploaded to WaveSpeed first. If the
+ * provider still rejects the images by size (413 / "cannot exceed 30MB"), retry once
+ * keeping only the latest turn's images under a stricter budget; other failures are
+ * thrown as before.
+ */
+async function postWithImageBudget(messages: ChatMessage[], body: (messages: ChatMessage[]) => Record<string, unknown>, signal?: AbortSignal, strict = false) {
+  const send = async (budget: typeof LLM_IMAGE_BUDGET) => {
+    // Budget before messagesForLlm: the latest-turn retry needs the `internal` flag.
+    const prepared = await budgetLlmImages(messages, budget)
+    return fetch(WAVESPEED_URL, {
+      method: 'POST',
+      signal,
+      headers: {
+        'Authorization': `Bearer ${agentEnv.wavespeedApiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body(await providerMessages(messagesForLlm(prepared.messages)))),
+    })
+  }
+  let response = await send(strict ? LLM_IMAGE_RETRY_BUDGET : LLM_IMAGE_BUDGET)
+  if (!response.ok) {
+    const text = await response.text().catch(() => '')
+    if (!strict && hasLlmImages(messages) && isLlmImageSizeError(response.status, text)) {
+      console.error('[agent llm] image size rejected; retrying with latest-turn images only', response.status, text.slice(0, 300))
+      response = await send(LLM_IMAGE_RETRY_BUDGET)
+      if (response.ok)
+        return response
+      const retryText = await response.text().catch(() => '')
+      console.error('[agent llm] retry failed', response.status, retryText.slice(0, 500))
+      throw new Error(retryText || `WaveSpeed request failed (${response.status})`)
+    }
+    console.error('[agent llm] request failed', response.status, text.slice(0, 500))
+    throw new Error(text || `WaveSpeed request failed (${response.status})`)
+  }
+  return response
+}
+
 export async function completeText(options: {
   signal?: AbortSignal
   messages: ChatMessage[]
   temperature?: number
   maxTokens?: number
 }) {
-  const response = await fetch(WAVESPEED_URL, {
-    method: 'POST',
-    signal: options.signal,
-    headers: {
-      'Authorization': `Bearer ${agentEnv.wavespeedApiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: agentEnv.model,
-      temperature: options.temperature ?? 0.2,
-      stream: false,
-      max_tokens: options.maxTokens ?? 32,
-      messages: await providerMessages(messagesForLlm(options.messages)),
-    }),
-  })
-
-  if (!response.ok) {
-    const text = await response.text().catch(() => '')
-    throw new Error(text || `WaveSpeed request failed (${response.status})`)
-  }
+  const response = await postWithImageBudget(options.messages, messages => ({
+    model: agentEnv.model,
+    temperature: options.temperature ?? 0.2,
+    stream: false,
+    max_tokens: options.maxTokens ?? 32,
+    messages,
+  }), options.signal)
 
   const payload = await response.json() as {
     choices?: Array<{ message?: { content?: string | null } }>
@@ -173,28 +201,31 @@ export async function streamChat(options: {
   signal?: AbortSignal
   onDelta: (delta: StreamDelta) => void
 }) {
-  const response = await fetch(WAVESPEED_URL, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${agentEnv.wavespeedApiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: agentEnv.model,
-      temperature: 0.4,
-      stream: true,
-      messages: await providerMessages(messagesForLlm(options.messages)),
-      tools: options.tools,
-      tool_choice: options.disableTools ? 'none' : options.requiredTool ? { type: 'function', function: { name: options.requiredTool } } : 'auto',
-      parallel_tool_calls: !options.requiredTool,
-    }),
-    signal: options.signal,
-  })
-
-  if (!response.ok) {
-    const text = await response.text().catch(() => '')
-    throw new Error(text || `WaveSpeed request failed (${response.status})`)
+  try {
+    await streamChatOnce(options, false)
   }
+  catch (error) {
+    // Size errors can also arrive as the first SSE error chunk (before any delta).
+    if (!(error instanceof StreamImageSizeError))
+      throw error
+    console.error('[agent llm] image size rejected in stream; retrying with latest-turn images only', error.message.slice(0, 300))
+    await streamChatOnce(options, true)
+  }
+}
+
+class StreamImageSizeError extends Error {}
+
+async function streamChatOnce(options: Parameters<typeof streamChat>[0], strict: boolean) {
+  let emitted = false
+  const response = await postWithImageBudget(options.messages, messages => ({
+    model: agentEnv.model,
+    temperature: 0.4,
+    stream: true,
+    messages,
+    tools: options.tools,
+    tool_choice: options.disableTools ? 'none' : options.requiredTool ? { type: 'function', function: { name: options.requiredTool } } : 'auto',
+    parallel_tool_calls: !options.requiredTool,
+  }), options.signal, strict)
 
   if (!response.body)
     throw new Error('WaveSpeed returned an empty stream')
@@ -224,12 +255,17 @@ export async function streamChat(options: {
       catch {
         continue
       }
-      if (chunk.error?.message)
+      if (chunk.error?.message) {
+        if (!strict && !emitted && hasLlmImages(options.messages) && isLlmImageSizeError(0, chunk.error.message))
+          throw new StreamImageSizeError(chunk.error.message)
+        console.error('[agent llm] stream error', chunk.error.message.slice(0, 500))
         throw new Error(chunk.error.message)
+      }
       const choice = chunk.choices?.[0]
       if (!choice)
         continue
       const delta = choice.delta || {}
+      emitted = true
       options.onDelta({
         content: delta.content || undefined,
         reasoning: delta.reasoning || delta.reasoning_content || undefined,

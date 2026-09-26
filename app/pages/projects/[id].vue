@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { draftHasSkillCreator, stripSkillCreatorCommand, useSkillCreatorLaunch } from '~/composables/useSkillCreatorLaunch'
-import { isMediaAudioUrl, isMediaVideoUrl } from '~~/shared/utils/seedance25'
+import { isMediaAudioUrl, isMediaDocumentUrl, isMediaVideoUrl } from '~~/shared/utils/seedance25'
 import { IDEOGRAM_REMOVE_BACKGROUND_MODEL } from '~~/shared/utils/ideogram'
 import type { GenerationJobPublic, GenerationJobsList } from '~~/shared/types/generation'
 import type { GenerationProjectPublic } from '~~/shared/types/project'
@@ -667,6 +667,29 @@ const libraryImportPending = ref(false)
 const pendingLibraryAssets = ref<Array<{ url: string, name: string, kind: 'image' | 'video' | 'audio' }>>([])
 const { libraries, loadLibraries, upsertLibrary } = useAssetLibraries()
 
+const settingSkillCoverUrl = ref('')
+
+/** Skill Test canvas: make a generated still the bound skill card cover (no Skill Creator round-trip). */
+async function onSetSkillCover(url: string) {
+  const skillId = boundSkillId.value
+  if (!skillId || !url || settingSkillCoverUrl.value)
+    return
+  settingSkillCoverUrl.value = url
+  try {
+    await $fetch(`/api/skills/${encodeURIComponent(skillId)}`, {
+      method: 'PATCH',
+      body: { cover: url },
+    })
+    toast.success('Skill cover updated')
+  }
+  catch (error) {
+    toast.error(readErrorMessage(error, 'Could not set the skill cover'))
+  }
+  finally {
+    settingSkillCoverUrl.value = ''
+  }
+}
+
 function requestSaveToLibrary(assets: Array<{ url: string, name: string, kind: 'image' | 'video' | 'audio' }>) {
   const unique = []
   const seen = new Set<string>()
@@ -1123,10 +1146,11 @@ function onAttachCanvas(payload: { urls: string[], prompt: string }) {
   attachUrls(payload.urls.map((url) => {
     const audio = isMediaAudioUrl(url)
     const video = !audio && isMediaVideoUrl(url)
+    const document = !audio && !video && isMediaDocumentUrl(url)
     return {
       url,
-      name: payload.prompt.trim() || (audio ? 'Voice reference' : video ? 'Video reference' : 'Canvas still'),
-      kind: audio ? 'audio' as const : video ? 'video' as const : 'image' as const,
+      name: payload.prompt.trim() || (document ? 'Document' : audio ? 'Voice reference' : video ? 'Video reference' : 'Canvas still'),
+      kind: audio ? 'audio' as const : video ? 'video' as const : document ? 'document' as const : 'image' as const,
     }
   }))
 }
@@ -1375,6 +1399,9 @@ async function onRemoveObjectCanvas(payload: { urls: string[], prompt: string })
               :deleting-task-id="deletingTaskId"
               :show-move="true"
               show-attach
+              :show-set-cover="skillTestMode && Boolean(boundSkillId)"
+              :setting-cover-url="settingSkillCoverUrl"
+              @set-cover="onSetSkillCover"
               @delete="requestDelete"
               @delete-many="requestBulk('delete', $event)"
               @move-many="requestBulk('move', $event)"

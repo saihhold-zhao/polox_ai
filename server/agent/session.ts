@@ -437,6 +437,17 @@ export async function refreshSessionPrompt(session: AgentSession) {
 export function upsertImage(session: AgentSession, image: AgentImage) {
   image.name = allocateAssetName(image, session.images)
   const index = session.images.findIndex(item => item.id === image.id)
+  const previous = index >= 0 ? session.images[index] : undefined
+  if (image.status === 'fail') {
+    // Auto-retry guards need to know how old a failure is and whether it was already retried.
+    image.failedAt = image.failedAt || (previous?.status === 'fail' ? previous.failedAt : undefined) || Date.now()
+    if (previous?.autoRetryHandled)
+      image.autoRetryHandled = true
+  }
+  else {
+    delete image.failedAt
+    delete image.autoRetryHandled
+  }
   if (index >= 0)
     session.images[index] = image
   else

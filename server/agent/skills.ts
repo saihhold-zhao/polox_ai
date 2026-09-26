@@ -3,6 +3,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { cwd as processCwd } from 'node:process'
 import { fileURLToPath } from 'node:url'
+import { builtinSkillCategory, normalizeSkillCategory, type SkillCategory } from '../../shared/utils/skillCategory'
 
 export type SkillSource = 'builtin' | 'user' | 'imported'
 export type SkillVisibility = 'catalog' | 'hidden'
@@ -17,6 +18,11 @@ export interface SkillFrontmatter {
   triggers: string[]
   requires: string[]
   inputs: string[]
+  /**
+   * Sub-category (utility | fun). Set only when the frontmatter declares it,
+   * or for builtins (from BUILTIN_SKILL_CATEGORIES). Readers default missing to utility.
+   */
+  category?: SkillCategory
   safety: {
     maxGenerationsPerRun: number
     allowSpend: boolean
@@ -40,7 +46,6 @@ export const CORE_SKILL_IDS = [
   'prompt-rewrite',
   'single-generator',
   'result-evaluation',
-  'long-form-video',
 ] as const
 
 /** Specialty builtins kept as dedicated workflows; full markdown loads on demand. */
@@ -54,7 +59,20 @@ export const SPECIALTY_BUILTIN_IDS = [
   'image-layer-splitter',
   'image-editing',
   'skill-creator',
+  'talking-avatar',
+  'long-form-video',
 ] as const
+
+/** Enabled user skills listed in the system prompt catalog (the rest stay reachable via /slug). */
+export const USER_SKILL_CATALOG_CAP = 30
+const SKILL_DESCRIPTION_MAX = 160
+
+export function truncateSkillDescription(text: string, max = SKILL_DESCRIPTION_MAX) {
+  const clean = String(text || '').replace(/\s+/g, ' ').trim()
+  if (clean.length <= max)
+    return clean
+  return `${clean.slice(0, max - 1).trimEnd()}…`
+}
 
 const SKILL_ID_RE = /^[a-z][a-z0-9-]{1,63}$/
 
@@ -179,6 +197,11 @@ export function parseSkillMarkdown(raw: string, fallbackId: string, source: Skil
     triggers,
     requires,
     inputs,
+    ...(typeof data.category === 'string' && data.category.trim()
+      ? { category: normalizeSkillCategory(data.category) }
+      : source === 'builtin'
+        ? { category: builtinSkillCategory(String(data.id || fallbackId)) }
+        : {}),
     safety: {
       maxGenerationsPerRun: Number(safetyRaw.maxGenerationsPerRun ?? data.maxGenerationsPerRun ?? 3) || 3,
       allowSpend: safetyRaw.allowSpend === undefined && data.allowSpend === undefined
@@ -261,14 +284,35 @@ export function loadSkillDocument(id: string, preferUser = false): SkillDocument
   return preferUser ? null : loadUserSkillFile(id)
 }
 
+/** Builtin skill kept in the repo but hidden from the catalog, slash menu and load_skill (core skills excepted). */
+export function isHiddenBuiltinSkill(id: string) {
+  if (CORE_SKILL_IDS.includes(id as typeof CORE_SKILL_IDS[number]))
+    return false
+  const doc = loadBuiltinSkill(id)
+  return Boolean(doc && doc.frontmatter.visibility === 'hidden')
+}
+
 export function parseSkillSlashIds(text: string): string[] {
   const ids = [...text.matchAll(/(?:^|\s)\/([a-z][a-z0-9-]{1,63})(?=\s|$)/g)].map(match => match[1]!)
   return [...new Set(ids)]
 }
 
-function catalogLine(doc: SkillDocument) {
-  const when = doc.frontmatter.triggers[0] ? `Trigger ${doc.frontmatter.triggers[0]}.` : `Trigger /${doc.id}.`
-  return `- \`/${doc.id}\` — ${doc.frontmatter.name}: ${doc.frontmatter.description} ${when} Call load_skill({ id: "${doc.id}" }) before following its full instructions.`
+function compactCatalogLine(skill: Pick<SkillFrontmatter, 'id' | 'name' | 'description' | 'triggers'>) {
+  const extra = (skill.triggers || []).find(trigger => trigger && trigger !== `/${skill.id}`)
+  return `- /${skill.id} — ${skill.name}: ${truncateSkillDescription(skill.description)}${extra ? ` (also ${extra})` : ''}`
+}
+
+/** Builtins listed in the catalog: everything not core and not hidden. */
+export function builtinCatalogDocs(builtins: SkillDocument[] = listBuiltinSkillDocuments()) {
+  return builtins.filter(doc =>
+    doc.frontmatter.visibility !== 'hidden'
+    && !CORE_SKILL_IDS.includes(doc.id as typeof CORE_SKILL_IDS[number]),
+  )
+}
+
+/** True when the prompt already carries the loaded body for this skill id. */
+export function promptHasLoadedSkill(prompt: unknown, id: string) {
+  return typeof prompt === 'string' && prompt.includes(`### Loaded skill: `) && prompt.includes(`(\`/${id}\`)\n\n`)
 }
 
 export interface SkillsPromptOptions {
@@ -287,16 +331,17 @@ export function skillsPromptBlock(options: SkillsPromptOptions = {}) {
       coreBlocks.push(doc.body)
   }
 
-  const catalogDocs = builtins.filter(doc =>
-    !CORE_SKILL_IDS.includes(doc.id as typeof CORE_SKILL_IDS[number])
-    || doc.id === 'long-form-video',
-  )
+  const catalogDocs = builtinCatalogDocs(builtins)
+  const userRows = (options.userCatalog || [])
+    .filter(skill => skill.visibility !== 'hidden' && !byId.has(skill.id))
+    .sort((a, b) => a.id.localeCompare(b.id))
+  const listedUsers = userRows.slice(0, USER_SKILL_CATALOG_CAP)
   const catalogLines = [
-    ...catalogDocs.map(catalogLine),
-    ...(options.userCatalog || [])
-      .filter(skill => skill.visibility !== 'hidden')
-      .map(skill => `- \`/${skill.id}\` — ${skill.name}: ${skill.description} Trigger ${(skill.triggers[0] || `/${skill.id}`)}. Call load_skill({ id: "${skill.id}" }) before following its full instructions.`),
+    ...catalogDocs.map(doc => compactCatalogLine(doc.frontmatter)),
+    ...listedUsers.map(compactCatalogLine),
   ]
+  if (userRows.length > listedUsers.length)
+    catalogLines.push(`- …and ${userRows.length - listedUsers.length} more enabled user skills not listed. If the user types /slug, that skill loads automatically.`)
 
   const loadedIds = [...new Set(options.loadedSkillIds || [])]
     .filter(id => !CORE_SKILL_IDS.includes(id as typeof CORE_SKILL_IDS[number]))
@@ -316,15 +361,19 @@ export function skillsPromptBlock(options: SkillsPromptOptions = {}) {
     coreBlocks.join('\n\n'),
   ]
   if (catalogLines.length)
-    parts.push('', '### Skill catalog (summaries only)', ...catalogLines)
+    parts.push('', '### Skill catalog (summaries only; call load_skill({ id }) before following one)', ...catalogLines)
   if (loadedBlocks.length)
     parts.push('', '### On-demand skill bodies', ...loadedBlocks)
   parts.push(
     '',
     '### Skill loading rules',
+    '- Long, multi-shot or storyboard videos (longer than one clip, short films, multi-beat stories): call load_skill({ id: "long-form-video" }) first and follow it.',
     '- Prefer explicit `/user-skill-id` when a user skill and a builtin specialty share intent; otherwise builtin specialty workflows win.',
-    '- L1 user skills may only orchestrate registered tools (ask_user, generate_*, model_*, concat_videos, inspect_website, export_zip, load_skill, save_user_skill). They cannot invent custom UI cards (box/mask/coord editors). Compose existing specialty skills or ask the user to open an Issue for new UI.',
+    '- L1 user skills may only orchestrate registered tools (ask_user, request_voice_recording, generate_*, model_*, concat_videos, measure_video_duration, extract_video_frame, inspect_website, export_zip, load_skill, save_user_skill). They cannot invent custom UI cards (box/mask/coord editors). Compose existing specialty skills or ask the user to open an Issue for new UI.',
     '- load_skill is free and read-only. save_user_skill validates and persists user skills; never overwrite builtin ids.',
+    '- Skill Creator: right before the final exit, first judge the category yourself from the skill purpose (utility = functional/productivity, fun = entertainment/playful/novelty; unclear = utility), then ask_user skill_category with your judged option first, set as recommended, labeled (Recommended), with a one-line reason; save the option the user picked as category on the final save_user_skill and exit_skill_creator.',
+    '- In a skill project Test mode, when the user asks to use a generated or uploaded image as the skill cover, call set_skill_cover({ url }) with that image URL (free, no /skill-creator needed).',
+    '- Skill id and /triggers must be English kebab-case (a-z, 0-9, hyphens). Display name and catalog description must be English (agent recommendations and saved copy).',
   )
   return `\n\n${parts.join('\n')}`
 }

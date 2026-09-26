@@ -71,6 +71,8 @@ function parseChoiceBody(body: Record<string, unknown>): ChoiceBody {
             regions: number[][]
           }[] | undefined,
           text: typeof row.text === 'string' ? row.text : undefined,
+          voiceUrl: typeof row.voiceUrl === 'string' ? row.voiceUrl : undefined,
+          voiceName: typeof row.voiceName === 'string' ? row.voiceName : undefined,
           skipped: row.skipped === true,
         }]
       })

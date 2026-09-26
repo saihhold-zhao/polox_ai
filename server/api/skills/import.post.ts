@@ -5,7 +5,8 @@ export default defineEventHandler(async (event) => {
   ensureUserSkillsReady()
   const body = await readBody<{
     markdown?: string
-    skill?: { markdown?: string }
+    category?: string
+    skill?: { markdown?: string, category?: string }
     enabled?: boolean
   }>(event)
   const result = await importSkillPackage(body || {}, { enabled: body?.enabled ?? false })

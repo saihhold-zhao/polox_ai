@@ -12,6 +12,11 @@ function load(file, mocks = {}, globals = {}) {
  vm.runInNewContext(code, { module, exports:module.exports, require:id => id in mocks ? mocks[id] : require(id), File, URL, atob, AbortSignal, setTimeout, clearTimeout, ...globals })
  return module.exports
 }
+// llm.ts budgets images via llmImageBudget (pure) and llmImageCopies (sharp + upload); the copy step is stubbed here.
+function llmMocks(extra) {
+ const budget=load('../agent/llmImageBudget')
+ return {'./llmImageBudget':budget,'./llmImageCopies':{budgetLlmImages:async(messages,options=budget.LLM_IMAGE_BUDGET)=>budget.applyLlmImageBudget(messages,options)},...extra}
+}
 function harness() {
  const db = new DatabaseSync(':memory:')
  const settings = load('serviceSettings', {'./sqlite':{connectDatabase:()=>db}})
@@ -116,18 +121,21 @@ test('malformed balance responses cannot produce a successful connection', async
 test('vision-capable LLM completion and streaming use WaveSpeed without fal upload', async () => {
  const requests=[]
  let uploads=0
- const api=load('../agent/llm', {
+ const api=load('../agent/llm', llmMocks({
   './env':{agentEnv:{wavespeedApiKey:'private-wave',model:'test/vision-model'}},
   '../utils/wavespeed':{uploadWavespeedFile:async()=> {uploads++;return 'https://cdn.example.com/image.png'}},
   '../utils/localMedia':{readStoredMedia:async()=>({bytes:new Uint8Array([1,2,3]),mime:'image/png'})},
- }, {TextDecoder,fetch:async(url,init)=>{
+ }), {TextDecoder,fetch:async(url,init)=>{
   requests.push(url)
   assert.equal(url,'https://llm.wavespeed.ai/v1/chat/completions')
   assert.equal(init.headers.Authorization,'Bearer private-wave')
   const body=JSON.parse(init.body)
   assert.equal(body.model,'test/vision-model')
   assert.ok(!init.body.includes('base64'))
-  assert.equal(body.messages[0].content[0].image_url.url,'https://cdn.example.com/image.png')
+  // Duplicate image URLs keep only the newest copy (older one becomes a text placeholder).
+  const imageParts=body.messages[0].content.filter(part=>part.type==='image_url')
+  assert.equal(imageParts.length,1)
+  assert.equal(imageParts[0].image_url.url,'https://cdn.example.com/image.png')
   if(!body.stream) return {ok:true,json:async()=>({choices:[{message:{content:'OK'}}]})}
   return new Response('data: '+JSON.stringify({choices:[{delta:{content:'Hello',tool_calls:[{index:0,id:'call-1',function:{name:'test_tool',arguments:'{}'}}]}}]})+'\n\ndata: [DONE]\n\n')
  }})
@@ -156,11 +164,11 @@ test('an empty LLM answer must not pass the connection test', async () => {
 
 test('DeepSeek V4 Flash sends text and refuses unsupported image input before a request', async () => {
  let requests=0
- const api=load('../agent/llm', {
+ const api=load('../agent/llm', llmMocks({
   './env':{agentEnv:{wavespeedApiKey:'private-wave',model:'deepseek/deepseek-v4-flash'}},
   '../utils/wavespeed':{uploadWavespeedFile:async()=> 'https://cdn.example.com/image.png'},
   '../utils/localMedia':{readStoredMedia:async()=>{throw new Error('must not read images')}},
- }, {fetch:async(url,init)=>{
+ }), {fetch:async(url,init)=>{
   requests++
   assert.equal(url,'https://llm.wavespeed.ai/v1/chat/completions')
   const body=JSON.parse(init.body)
@@ -182,10 +190,10 @@ test('LLM excludes orphan and duplicate tool results from old sessions without m
   {role:'tool',tool_call_id:'real-call',content:'valid result'},
   {role:'tool',tool_call_id:'real-call',content:'duplicate'},
  ]
- const api=load('../agent/llm',{
+ const api=load('../agent/llm',llmMocks({
   './env':{agentEnv:{wavespeedApiKey:'key',model:'test/model'}},
   '../utils/wavespeed':{},'../utils/localMedia':{},
- },{fetch:async(url,init)=>{
+ }),{fetch:async(url,init)=>{
   const sent=JSON.parse(init.body).messages
   assert.equal(sent.length,4)
   assert.equal(sent[3].tool_call_id,'real-call')

@@ -54,7 +54,14 @@ function normalizeWan30Resolution(value: string) {
   return '480p'
 }
 
+function asVideoRefList(value: string[] | undefined | null) {
+  return Array.isArray(value) ? value : []
+}
+
 export function clampVideoToFamily(args: GenerateVideoArgs, family: VideoFamily): GenerateVideoArgs {
+  const referenceImages = asVideoRefList(args.reference_images)
+  const referenceVideos = asVideoRefList(args.reference_videos)
+
   if (family === 'seedance-2-5') {
     let resolution = args.resolution === '4k' ? '1080p' : args.resolution
     if (!isSeedance25Resolution(resolution))
@@ -64,14 +71,14 @@ export function clampVideoToFamily(args: GenerateVideoArgs, family: VideoFamily)
       family,
       resolution,
       duration: snapSeedance25Duration(args.duration),
-      reference_images: args.reference_images.slice(0, 30),
-      reference_videos: args.reference_videos.slice(0, 10),
+      reference_images: referenceImages.slice(0, 30),
+      reference_videos: referenceVideos.slice(0, 10),
     }
   }
 
   if (family === 'wan-3') {
     const hasFirst = Boolean(args.first_frame)
-    const hasRefs = Boolean(args.reference_images.length || args.reference_videos.length)
+    const hasRefs = Boolean(referenceImages.length || referenceVideos.length)
     let aspectRatio = args.aspect_ratio
     if (!isWan30AspectRatio(aspectRatio))
       aspectRatio = hasFirst && !hasRefs ? 'adaptive' : '16:9'
@@ -84,8 +91,8 @@ export function clampVideoToFamily(args: GenerateVideoArgs, family: VideoFamily)
         ? normalizeWan30Resolution(args.resolution)
         : '480p',
       duration,
-      reference_images: args.reference_images.slice(0, 10),
-      reference_videos: args.reference_videos.slice(0, 5),
+      reference_images: referenceImages.slice(0, 10),
+      reference_videos: referenceVideos.slice(0, 5),
     }
   }
 
@@ -95,8 +102,8 @@ export function clampVideoToFamily(args: GenerateVideoArgs, family: VideoFamily)
     family,
     resolution: isSeedance2Resolution(args.resolution) ? args.resolution : '480p',
     duration: isSeedance2Duration(duration) ? duration : 5,
-    reference_images: args.reference_images.slice(0, 9),
-    reference_videos: args.reference_videos.slice(0, 3),
+    reference_images: referenceImages.slice(0, 9),
+    reference_videos: referenceVideos.slice(0, 3),
   }
 }
 

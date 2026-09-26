@@ -149,13 +149,14 @@ export function useSkillCreatorLaunch() {
       `Current skill id: ${skillId}`,
       `Current skill name: ${displayName}`,
       'Status: draft (not published — Test and enable stay unavailable until published).',
+      'Current skill category: utility (default — confirm with skill_category before the final exit).',
       '',
       'Current skill markdown:',
       '```markdown',
       bodyMarkdown,
       '```',
       '',
-      'Interview the user about what the skill should do. After clarifying, ask if they have more changes, then ask_user for display name, /trigger (check_skill_id — global uniqueness), then catalog description. WIP saves may use status:"draft"; final exit ask_user is save_and_exit (Enable & exit) or test_now (Enable & test) — both Enable the skill (published+enabled, no draft), then exit_skill_creator. Say Enable, not Publish. Do not dump the full SKILL.md into chat unless they ask.',
+      'Interview the user about what the skill should do. After clarifying, ask if they have more changes, then ask_user for display name, /trigger (check_skill_id — global uniqueness), then catalog description. Right before the final exit, judge Utility vs Fun from the skill purpose, then ask_user skill_category with your judgment first + recommended + one-line reason, and pass the option the user picked as category on the final save_user_skill + exit_skill_creator. All agent-recommended display names and catalog descriptions must be English (triggers stay English kebab-case). WIP saves may use status:"draft"; final exit ask_user is save_and_exit (Enable & exit) or test_now (Enable & test) — both Enable the skill (published+enabled, no draft), then exit_skill_creator. Say Enable, not Publish. Do not dump the full SKILL.md into chat unless they ask.',
       INTERNAL_EDIT_CONTEXT_END,
     ].join('\n')
 

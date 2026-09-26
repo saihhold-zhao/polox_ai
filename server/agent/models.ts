@@ -96,7 +96,13 @@ export async function prepareModelGeneration(tool: string, json: string, session
       if (/^https?:\/\//i.test(value))
         return value
       const media = value === 'latest'
-        ? session.images.find(image => image.status === 'success' && image.url && (key.includes('video') ? image.kind === 'video' : image.kind !== 'video'))
+        ? session.images.find(image => image.status === 'success' && image.url && (
+            key.includes('audio')
+              ? image.kind === 'audio'
+              : key.includes('video')
+                ? image.kind === 'video'
+                : image.kind !== 'video' && image.kind !== 'audio'
+          ))
         : session.images.find(image => image.id === value && image.status === 'success' && image.url)
       if (!media)
         throw new Error(`Missing media for ${key}. Ask the user to upload it; never invent a URL.`)

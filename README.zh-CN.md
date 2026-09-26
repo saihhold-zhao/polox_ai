@@ -27,22 +27,6 @@
 </p>
 
 
-## 案例
-
-**图层拆分（Image Layer Splitter）** — 左侧是 Agent 对话框（全部交互在这里完成），右侧是无限画布，方便查看与整理所有资产。
-
-<p align="center">
-  <img src="docs/images/polox-readme-case-layer-split.jpeg" alt="案例 — Agent 对话框与无限画布上的图层拆分" width="100%" />
-</p>
-
-**图片文字编辑（Image Text Editor）** — 通过 LLM 检测文字坐标，并在画布上显示与文本框对应的序号。
-
-<p align="center">
-  <img src="docs/images/polox-readme-update-image-text-editor.jpeg" alt="案例 — Image Text Editor 画布序号与文本框对应" width="100%" />
-</p>
-
-<p align="center"><em>以上只是部分案例。更多功能见下方说明，也可直接问 GrokBot 或 Codex，欢迎动手体验。</em></p>
-
 ## 简介
 
 本项目是 [PoloX AI](https://polox.ai) 的开源版本，与 [Lovart](https://lovart.ai)、[Crepal](https://crepal.ai) 同属 AI 创作平台。PoloX 采用 **Agent 原生**的产品设计：以 Agent 对话与无限画布承载全部交互，将创作、生成与编辑融入连续的工作流程。你只需描述想法，与 Agent 沟通，并在画布上持续完善结果。
@@ -50,6 +34,24 @@
 PoloX 基于 Nuxt、Vue 和 SQLite 在本地运行。使用自己的 [WaveSpeed](https://wavespeed.ai) API Key 即可，无需注册 PoloX 账号或订阅。项目、资源库、对话、生成记录和媒体文件保存在本机；AI 推理由外部服务提供，相关输入会发送给服务商，API 使用费用由服务商收取。WaveSpeed 支持信用卡、微信和支付宝结账。
 
 ## 更新
+
+### 2026 年 9 月 26 日 — v2.1.0
+
+1. **LLM 图像预算** — 每次请求最多 8 张图片、18 MB；较早的图片改用链接发送，本地图片上传前会缩小为最长边 1536px 的 WebP，遇到 413 会自动重试一次。
+
+2. **更稳健的视频生成** — 增加参考素材检查、视频抽帧与时长工具，并在必要时使用最后一帧兜底。
+
+3. **文档上传与阅读** — 支持 PDF、Word 和 Excel；阅读前会先询问，并提供 Office 预览。视频抽帧和文档功能需要 `ffmpeg` 与 `ffprobe`（见下方安装说明）。
+
+4. **录音与 Talking Avatar** — 新增录音机，并重写 Talking Avatar skill。
+
+5. **Skill 分类** — 新增 Utility 和 Fun 分类及首页标签页，Skill Creator 也会询问分类。
+
+6. **Skill 封面** — 可直接从测试结果设置 skill 封面。
+
+7. **更顺畅的 Agent 流程** — 修复 IME 回车误发送，让自动重试更智能，优化首页到 Agent 的衔接，并让 Create Skill 直接打开编辑器。
+
+8. **更轻量的提示词与界面** — skill prompt 减少 token 消耗，移动端 Skills 标题栏保持单行显示。
 
 ### 2026 年 9 月 21 日 — v2.0.0
 
@@ -161,7 +163,7 @@ PoloX 基于 Nuxt、Vue 和 SQLite 在本地运行。使用自己的 [WaveSpeed]
 ```text
 请帮我在本地安装 PoloX AI：
 1. 检查是否已安装 Node.js 22.20 或更新版本，以及 pnpm；如有缺失，请安装。
-2. 安装 FFmpeg（包含 ffprobe），用于视频拼接，并确认这两个命令可用。
+2. 安装 FFmpeg（包含 ffprobe），用于视频拼接、视频抽帧和文档功能，并确认这两个命令可用。
 3. 克隆 https://github.com/saihhold-zhao/polox_ai 并进入项目目录。
 4. 执行 pnpm i 安装依赖。
 ```
@@ -200,7 +202,7 @@ pnpm dev
 
 ### 安装 FFmpeg：用于视频拼接
 
-将生成的视频片段拼接成长视频，需要安装 **FFmpeg 和 ffprobe**。普通上传和 AI 生成不依赖它们，`pnpm i` 也不会自动安装它们。
+将生成的视频片段拼接成长视频、抽取视频帧和使用文档功能，需要安装 **FFmpeg 和 ffprobe**。普通上传和 AI 生成不依赖它们，`pnpm i` 也不会自动安装它们。
 
 macOS（使用 Homebrew）：
 

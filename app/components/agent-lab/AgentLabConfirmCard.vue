@@ -3,7 +3,7 @@ import type { ConfirmationPayload } from '~/composables/useAgentLab'
 import { Clock3 } from 'lucide-vue-next'
 import { GPT_IMAGE_2_ASPECT_RATIOS, GPT_IMAGE_2_RESOLUTIONS, gptImage2ComboError } from '~~/shared/utils/gptImage2'
 import { SEEDANCE_2_ASPECT_RATIOS, SEEDANCE_2_DURATIONS, SEEDANCE_2_RESOLUTIONS } from '~~/shared/utils/seedance2'
-import { isMediaVideoUrl, SEEDANCE_25_ASPECT_RATIOS, SEEDANCE_25_DURATIONS, SEEDANCE_25_RESOLUTIONS } from '~~/shared/utils/seedance25'
+import { isMediaDocumentUrl, isMediaVideoUrl, SEEDANCE_25_ASPECT_RATIOS, SEEDANCE_25_DURATIONS, SEEDANCE_25_RESOLUTIONS } from '~~/shared/utils/seedance25'
 import { WAN_30_ASPECT_RATIOS, WAN_30_DURATIONS, WAN_30_RESOLUTIONS } from '~~/shared/utils/wan30'
 import AspectRatioIcon from '@/components/ai-generator/AspectRatioIcon.vue'
 import { UPLOAD_FIELD_LABELS } from '@/lib/aiModelSchema'
@@ -179,7 +179,7 @@ const liveReason = computed(() => {
 const inputUrls = computed(() =>
   (props.confirmation.inputUrls || []).filter(url => /^https?:\/\//i.test(url)),
 )
-const imageInputs = computed(() => inputUrls.value.filter(url => !isMediaVideoUrl(url)))
+const imageInputs = computed(() => inputUrls.value.filter(url => !isMediaVideoUrl(url) && !isMediaDocumentUrl(url)))
 const videoInputs = computed(() => inputUrls.value.filter(url => isMediaVideoUrl(url)))
 const imageInputLabel = computed(() => {
   if (kind.value === 'cutout')
@@ -249,7 +249,7 @@ const modelLabel = computed(() => {
 function openInput(url: string, label: string) {
   openMedia({
     url,
-    kind: isMediaVideoUrl(url) ? 'video' : 'image',
+    kind: isMediaVideoUrl(url) ? 'video' : isMediaDocumentUrl(url) ? 'document' : 'image',
     alt: label,
   })
 }
@@ -353,7 +353,7 @@ function emitConfirm() {
         <details v-for="(job, index) in confirmation.jobs" :key="job.id" class="group px-3 py-2.5">
           <summary class="flex cursor-pointer list-none items-start gap-3 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
             <span class="pt-0.5 text-xs tabular-nums text-muted-foreground">{{ String(index + 1).padStart(2, '0') }}</span>
-            <img v-if="job.inputUrls[0] && !isMediaVideoUrl(job.inputUrls[0])" :src="job.inputUrls[0]" alt="Reference" class="h-12 w-16 shrink-0 rounded object-cover" loading="lazy">
+            <img v-if="job.inputUrls[0] && !isMediaVideoUrl(job.inputUrls[0]) && !isMediaDocumentUrl(job.inputUrls[0])" :src="job.inputUrls[0]" alt="Reference" class="h-12 w-16 shrink-0 rounded object-cover" loading="lazy">
             <div class="min-w-0 flex-1">
               <p class="truncate text-sm font-medium" :title="job.name">
                 {{ job.name }}

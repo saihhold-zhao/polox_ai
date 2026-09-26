@@ -59,7 +59,7 @@ const paramRows = computed(() => {
     return [{
       key,
       label: labels.get(key) || key.split('_').map(part => part.charAt(0).toUpperCase() + part.slice(1)).join(' '),
-      kind: urls.length ? mediaKind(urls) : 'text' as const,
+      kind: urls.length ? mediaKind(urls, key) : 'text' as const,
       text: formatParamValue(value),
       urls,
     }]
@@ -74,12 +74,38 @@ function extractHttpUrls(value: unknown) {
   return []
 }
 
-function mediaKind(urls: string[]) {
-  if (urls.every(url => isMediaVideoUrl(url)))
+function mediaKind(urls: string[], key = '') {
+  const hint = key.toLowerCase()
+  // Uploaded CDN URLs often omit file extensions — prefer the schema field name.
+  if (hint.includes('video') || (urls.length > 0 && urls.every(url => isMediaVideoUrl(url))))
     return 'videos' as const
-  if (urls.every(url => isMediaAudioUrl(url)))
+  if (hint.includes('audio') || (urls.length > 0 && urls.every(url => isMediaAudioUrl(url))))
+    return 'audio' as const
+  if (urls.some(url => isMediaVideoUrl(url)))
+    return 'videos' as const
+  if (urls.some(url => isMediaAudioUrl(url)))
     return 'audio' as const
   return 'images' as const
+}
+
+/** Nudge mobile browsers to decode a still frame for thumbnail display. */
+function videoPreviewSrc(url: string) {
+  if (!url || url.includes('#'))
+    return url
+  return `${url}#t=0.001`
+}
+
+function onVideoThumbReady(event: Event) {
+  const media = event.target
+  if (!(media instanceof HTMLVideoElement))
+    return
+  try {
+    if (media.currentTime < 0.05)
+      media.currentTime = 0.001
+  }
+  catch {
+    // Ignore seek failures on some codecs / CDNs.
+  }
 }
 
 function formatParamValue(value: unknown) {
@@ -193,11 +219,13 @@ const completedAtLabel = computed(() => {
                   >
                     <video
                       v-if="row.kind === 'videos'"
-                      :src="url"
+                      :src="videoPreviewSrc(url)"
                       muted
                       playsinline
                       preload="metadata"
-                      class="h-20 w-20 object-cover"
+                      class="h-20 w-20 bg-muted/40 object-cover"
+                      @loadedmetadata="onVideoThumbReady"
+                      @loadeddata="onVideoThumbReady"
                     />
                     <span
                       v-else-if="row.kind === 'audio'"

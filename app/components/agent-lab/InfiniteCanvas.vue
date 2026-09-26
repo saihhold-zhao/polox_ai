@@ -6,7 +6,8 @@ import type { CanvasCorner, CanvasGuide, CanvasPoint } from '~/utils/infiniteCan
 import { isGenerationActive } from '~~/shared/types/generation'
 import { assetName, matchingAgentAsset } from '~~/shared/utils/assetName'
 import { isImageLayerSplitterModel } from '~~/shared/utils/imageLayerSplitter'
-import { isMediaAudioUrl, isMediaVideoUrl } from '~~/shared/utils/seedance25'
+import { isMediaAudioUrl, isMediaDocumentUrl, isMediaVideoUrl, mediaDocumentLabel } from '~~/shared/utils/seedance25'
+import { canUseAsSkillCover } from '~~/shared/utils/skillCover'
 import { byCanvasOrder, CARD_CHROME_HEIGHT, CARD_HEIGHT, CARD_WIDTH, CELL_X, CELL_Y, clampZoom, findFreeRect, fitMediaRect, intersectsSelection, inViewport, isDefaultCanvasGrid, latestCanvasAsset, MAX_PLAYING_VIDEOS, MAX_VISIBLE, resizeFromCorner, snapCanvasRect, zoomAt } from '~/utils/infiniteCanvas'
 
 const props = defineProps<{
@@ -15,6 +16,9 @@ const props = defineProps<{
   projectId: string
   showAttach?: boolean
   showMove?: boolean
+  /** Skill Test mode: offer "Use as skill cover" on finished still images. */
+  showSetCover?: boolean
+  settingCoverUrl?: string
   deletingTaskId?: string | null
   loading?: boolean
   emptyMessage?: string
@@ -33,6 +37,7 @@ const emit = defineEmits<{
   removeObject: [payload: { urls: string[], prompt: string }]
   saveToLibrary: [assets: CanvasLibraryAsset[]]
   saveToLibraryMany: [assets: CanvasLibraryAsset[]]
+  setCover: [url: string]
 }>()
 interface Asset {
   createdAt?: string
@@ -44,6 +49,7 @@ interface Asset {
   name: string
   video: boolean
   audio: boolean
+  document: boolean
   cutout: boolean
   state: GenerationJobState
   error: string
@@ -64,7 +70,7 @@ const sourceAssets = computed(() => {
       const layerResult = isImageLayerSplitterModel(job.model)
       const prompt = layerResult ? '' : job.prompt
       const layerName = job.layers?.[index]?.name || (index === 0 ? 'Background' : `Layer ${index}`)
-      result.push({ id: `${job.taskId}:${index}`, taskId: job.taskId, createdAt: job.createdAt, completedAt: job.completedAt, job, url, name: layerResult ? layerName : assetName({ id: `${job.taskId}:${index}`, prompt: job.prompt, name: String(job.input.asset_name || matchingAgentAsset(props.images, job.taskId, url)?.name || ''), kind: job.category === 'Video' ? 'video' : 'still', videoMode: String(job.input.videoMode || '') }), prompt, video: job.category === 'Video' || isMediaVideoUrl(url), audio: isMediaAudioUrl(url), cutout: /remove.?background|cutout/i.test(job.task), state: job.state, error: job.failMsg })
+      result.push({ id: `${job.taskId}:${index}`, taskId: job.taskId, createdAt: job.createdAt, completedAt: job.completedAt, job, url, name: layerResult ? layerName : assetName({ id: `${job.taskId}:${index}`, prompt: job.prompt, name: String(job.input.asset_name || matchingAgentAsset(props.images, job.taskId, url)?.name || ''), kind: job.category === 'Video' ? 'video' : 'still', videoMode: String(job.input.videoMode || '') }), prompt, video: job.category === 'Video' || isMediaVideoUrl(url), audio: isMediaAudioUrl(url), document: !isMediaAudioUrl(url) && !(job.category === 'Video' || isMediaVideoUrl(url)) && isMediaDocumentUrl(url), cutout: /remove.?background|cutout/i.test(job.task), state: job.state, error: job.failMsg })
     }
   }
   for (const url of urls)
@@ -85,7 +91,7 @@ const sourceAssets = computed(() => {
     }
     if (taskIds.has(persistedId) || taskIds.has(item.providerTaskId || item.id))
       continue
-    result.push({ id: `${persistedId}:0`, taskId: item.providerTaskId || undefined, url: item.url, name: assetName(item), prompt: item.prompt, video: item.kind === 'video' || isMediaVideoUrl(item.url), audio: item.kind === 'audio' || isMediaAudioUrl(item.url), cutout: item.kind === 'cutout', state: item.status, error: item.error })
+    result.push({ id: `${persistedId}:0`, taskId: item.providerTaskId || undefined, url: item.url, name: assetName(item), prompt: item.prompt, video: item.kind === 'video' || isMediaVideoUrl(item.url), audio: item.kind === 'audio' || isMediaAudioUrl(item.url), document: item.kind === 'document' || (!((item.kind === 'audio') || isMediaAudioUrl(item.url)) && item.kind !== 'video' && (isMediaDocumentUrl(item.url || '') || /\.(pdf|docx?|pptx?|xlsx?|csv)$/i.test(item.name || ''))), cutout: item.kind === 'cutout', state: item.status, error: item.error })
   }
   return result
 })
@@ -97,11 +103,12 @@ const selected = ref('')
 const selection = ref(new Set<string>())
 const selectedAssets = computed(() => assets.value.filter(asset => selection.value.has(asset.id)))
 function toLibraryAsset(asset: Asset): CanvasLibraryAsset | null {
-  if (!asset.url || asset.state !== 'success')
+  // Asset library currently stores image/video/audio only — skip documents.
+  if (!asset.url || asset.state !== 'success' || asset.document)
     return null
   return {
     url: asset.url,
-    name: asset.name.replace(/^(Image|Video|Audio) · /, ''),
+    name: asset.name.replace(/^(Image|Video|Audio|Document|PDF) · /, ''),
     kind: asset.audio ? 'audio' : asset.video ? 'video' : 'image',
   }
 }
@@ -610,7 +617,7 @@ const detailJob = computed<GenerationJobPublic | null>(() => {
     taskId: asset.id,
     projectId: props.projectId,
     model: '',
-    category: asset.video ? 'Video' : 'Image',
+    category: asset.video ? 'Video' : asset.audio ? 'Audio' : asset.document ? 'Document' : 'Image',
     task: source?.kind || '',
     prompt: source?.prompt || asset.prompt,
     input: { prompt: source?.prompt || asset.prompt, aspect_ratio: source?.aspectRatio, resolution: source?.resolution, duration: source?.duration },
@@ -625,8 +632,13 @@ const detailJob = computed<GenerationJobPublic | null>(() => {
   }
 })
 function view(asset: Asset) {
-  if (asset.url && asset.state === 'success')
-    open({ url: asset.url, kind: asset.video ? 'video' : 'image', alt: asset.prompt || asset.name, cutout: asset.cutout })
+  if (!(asset.url && asset.state === 'success'))
+    return
+  if (asset.document) {
+    open({ url: asset.url, kind: 'document', alt: asset.name || asset.prompt })
+    return
+  }
+  open({ url: asset.url, kind: asset.video ? 'video' : 'image', alt: asset.prompt || asset.name, cutout: asset.cutout })
 }
 onBeforeUnmount(() => {
   clearTimeout(wheelTimer)
@@ -651,7 +663,7 @@ onBeforeUnmount(() => {
           v-for="asset in visible" :key="asset.id"
           class="absolute rounded-xl border"
           :class="[
-            asset.url && asset.state === 'success' && !asset.video ? 'bg-transparent' : 'bg-card shadow-sm',
+            asset.url && asset.state === 'success' && !asset.video && !asset.audio && !asset.document ? 'bg-transparent' : 'bg-card shadow-sm',
             asset.state === 'fail' ? 'border-destructive' : selection.has(asset.id) ? 'border-ring' : isGenerationActive(asset.state) ? 'border-primary/70' : 'border-border',
             selection.has(asset.id) && 'canvas-selected',
           ]"
@@ -665,18 +677,21 @@ onBeforeUnmount(() => {
           >
             {{ asset.name }}
           </p>
-          <div class="flex items-center justify-center overflow-hidden rounded-xl" :style="{ height: `${asset.point.height - CARD_CHROME_HEIGHT}px` }" :class="asset.url && asset.state === 'success' && !asset.video ? 'bg-transparent' : 'bg-muted/40'">
+          <div class="flex items-center justify-center overflow-hidden rounded-xl" :style="{ height: `${asset.point.height - CARD_CHROME_HEIGHT}px` }" :class="asset.url && asset.state === 'success' && !asset.video && !asset.audio && !asset.document ? 'bg-transparent' : 'bg-muted/40'">
             <AgentLabInfiniteCanvasMedia
               v-if="asset.url && asset.state === 'success'"
               :key="asset.url"
               :url="asset.url"
               :alt="(asset.prompt || asset.name).slice(0, 300)"
               :video="asset.video"
+              :audio="asset.audio"
+              :document="asset.document"
+              :name="asset.name"
               :playing="playingVideos.has(asset.id)"
               @dimensions="fitAsset(asset.id, $event)"
             />
             <div v-else class="flex w-full min-w-0 flex-col items-center gap-3 px-3 text-center text-muted-foreground" :style="{ fontSize: labelSize }">
-              <Icon :name="asset.video ? 'i-lucide-play' : asset.state === 'fail' ? 'i-lucide-triangle-alert' : 'i-lucide-image'" class="shrink-0" :style="{ width: `${20 / Math.min(camera.zoom, 1)}px`, height: `${20 / Math.min(camera.zoom, 1)}px` }" />
+              <Icon :name="asset.video ? 'i-lucide-play' : asset.audio ? 'i-lucide-music' : asset.document ? 'i-lucide-file-text' : asset.state === 'fail' ? 'i-lucide-triangle-alert' : 'i-lucide-image'" class="shrink-0" :style="{ width: `${20 / Math.min(camera.zoom, 1)}px`, height: `${20 / Math.min(camera.zoom, 1)}px` }" />
               <p class="w-full truncate" :title="asset.name">
                 {{ asset.name }}
               </p>
@@ -728,10 +743,10 @@ onBeforeUnmount(() => {
       @pointerdown.stop @dblclick.stop
     >
       <p class="line-clamp-2 max-w-80 text-xs" :title="asset.name">
-        {{ asset.name.replace(/^(Image|Video) · /, '') }}
+        {{ asset.name.replace(/^(Image|Video|Audio|Document|PDF) · /, '') }}
       </p>
       <div
-        v-if="showAttach && asset.url && !asset.video && !asset.audio && asset.state === 'success'"
+        v-if="showAttach && asset.url && !asset.video && !asset.audio && !asset.document && asset.state === 'success'"
         class="flex flex-wrap items-start gap-2"
       >
         <button
@@ -781,9 +796,9 @@ onBeforeUnmount(() => {
         </button>
       </div>
       <div class="flex items-center justify-between text-xs text-muted-foreground">
-        <span>{{ asset.video ? 'VIDEO' : 'IMAGE' }}</span>
+        <span>{{ asset.video ? 'VIDEO' : asset.audio ? 'AUDIO' : asset.document ? mediaDocumentLabel(asset.name || asset.url, 'badge') : 'IMAGE' }}</span>
         <div class="flex gap-1">
-          <button v-if="asset.job || asset.taskId" class="canvas-action" aria-label="View details" title="View details" @click="detailAsset = asset">
+          <button v-if="(asset.job || asset.taskId) && !asset.audio && !asset.document" class="canvas-action" aria-label="View details" title="View details" @click="detailAsset = asset">
             <Icon name="i-lucide-info" />
           </button>
           <button v-if="asset.url && asset.state === 'success'" class="canvas-action" aria-label="Open result" @click="view(asset)">
@@ -792,14 +807,17 @@ onBeforeUnmount(() => {
           <button v-if="asset.url && asset.state === 'success'" class="canvas-action" aria-label="Export original file" :title="exporting ? 'Exporting…' : 'Export original file'" :disabled="exporting" @click="exportAssets([asset], 'file')">
             <Icon :name="exporting ? 'i-lucide-loader-circle' : 'i-lucide-download'" :class="{ 'animate-spin': exporting }" />
           </button>
-          <button v-if="showAttach && asset.url && asset.state === 'success'" class="canvas-action" :aria-label="asset.video ? 'Use as video reference' : asset.audio ? 'Use as voice reference' : 'Use as reference'" :title="asset.video ? 'Use as video reference' : asset.audio ? 'Use as voice reference' : 'Use as reference'" @click="emit('attach', { urls: [asset.url], prompt: asset.prompt })">
+          <button v-if="showAttach && asset.url && asset.state === 'success'" class="canvas-action" :aria-label="asset.video ? 'Use as video reference' : asset.audio ? 'Use as voice reference' : asset.document ? 'Use as document reference' : 'Use as reference'" :title="asset.video ? 'Use as video reference' : asset.audio ? 'Use as voice reference' : asset.document ? 'Use as document reference' : 'Use as reference'" @click="emit('attach', { urls: [asset.url], prompt: asset.prompt })">
             <Icon name="i-lucide-paperclip" />
           </button>
           <button v-if="showMove && asset.taskId" class="canvas-action" aria-label="Move to project" @click="emit('move', asset.taskId)">
             <Icon name="i-lucide-folder" />
           </button>
-          <button v-if="asset.url && asset.state === 'success'" class="canvas-action" aria-label="Save to asset library" title="Save to asset library" @click="toLibraryAsset(asset) && emit('saveToLibrary', [toLibraryAsset(asset)!])">
+          <button v-if="asset.url && asset.state === 'success' && !asset.document" class="canvas-action" aria-label="Save to asset library" title="Save to asset library" @click="toLibraryAsset(asset) && emit('saveToLibrary', [toLibraryAsset(asset)!])">
             <Icon name="i-lucide-library" />
+          </button>
+          <button v-if="showSetCover && canUseAsSkillCover(asset)" class="canvas-action" aria-label="Use as skill cover" title="Use as skill cover" :disabled="settingCoverUrl === asset.url" @click="emit('setCover', asset.url!)">
+            <Icon :name="settingCoverUrl === asset.url ? 'i-lucide-loader-circle' : 'i-lucide-image-up'" :class="{ 'animate-spin': settingCoverUrl === asset.url }" />
           </button>
           <button v-if="['success', 'fail'].includes(asset.state)" class="canvas-action" aria-label="Delete result" :disabled="deletingTaskId === (asset.taskId || asset.id)" @click="emit('delete', asset.taskId || asset.id)">
             <Icon name="i-lucide-trash-2" />
@@ -835,7 +853,7 @@ onBeforeUnmount(() => {
         Retry
       </button>
     </div>
-    <AiGeneratorJobDetailDialog v-if="detailAsset" :open="Boolean(detailAsset)" :job="detailJob" @update:open="!$event && (detailAsset = null)" />
+    <AiGeneratorJobDetailDialog v-if="detailAsset && !detailAsset.document" :open="Boolean(detailAsset && !detailAsset.document)" :job="detailJob" @update:open="!$event && (detailAsset = null)" />
     <div v-if="!assets.length" class="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-3 text-muted-foreground">
       <Icon name="i-lucide-scan" class="size-10" />
       <p class="text-sm">

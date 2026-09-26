@@ -28,6 +28,7 @@ const MEDIA_BY_TYPE: Record<string, {
   'audio/aac': { extension: 'aac', maxBytes: MAX_AUDIO_BYTES },
   'audio/ogg': { extension: 'ogg', maxBytes: MAX_AUDIO_BYTES },
   'audio/mp4': { extension: 'm4a', maxBytes: MAX_AUDIO_BYTES },
+  'audio/webm': { extension: 'webm', maxBytes: MAX_AUDIO_BYTES },
 }
 export default defineEventHandler(async (event) => {
   const form = await readFormData(event)

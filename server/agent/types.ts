@@ -130,7 +130,7 @@ export interface ResolvedGenerateVideo {
   uncertain_fields?: UncertainField[]
 }
 
-export type AgentImageKind = 'still' | 'cutout' | 'upload' | 'video' | 'audio'
+export type AgentImageKind = 'still' | 'cutout' | 'upload' | 'video' | 'audio' | 'document'
 
 export interface AgentImage {
   modelId?: string
@@ -151,6 +151,10 @@ export interface AgentImage {
   videoMode?: 'text' | 'image' | 'reference' | 'concat'
   videoFamily?: VideoFamily
   providerTaskId?: string
+  /** Epoch ms when this output first became `fail` (set by upsertImage). */
+  failedAt?: number
+  /** An automatic retry was already issued for this failure; never auto-retry it again. */
+  autoRetryHandled?: boolean
 }
 
 export interface ConfirmationPayload {
@@ -195,6 +199,8 @@ export interface ChoiceQuestion {
   id: string
   title?: string
   prompt: string
+  /** Reading script shown in the in-chat voice recorder (voice_record); language matches the locked spoken language. */
+  script?: string
   options: ChoiceOption[]
   recommendedId?: string
 }
@@ -220,6 +226,8 @@ export interface ChoiceAnswer {
   imageUrl?: string
   regions?: number[][]
   boxedImageUrl?: string
+  voiceUrl?: string
+  voiceName?: string
   questionId: string
   optionId?: string
   label?: string

@@ -8,7 +8,7 @@ import { ArrowUp, ChevronDown, Paperclip, Plus, Square, X } from 'lucide-vue-nex
 import { normalizeComposerSelection } from '~~/shared/utils/agentComposerSelection'
 import { AGENT_MODELS, agentModelLogo, modelMention, publicAgentModels, readModelMentions, stripModelMentions } from '~~/shared/utils/agentModels'
 import { composerPlaceholderForSkills, findComposerCommand, mergeAgentSkillCatalog, PUBLIC_AGENT_SKILLS, readSkillCommands, searchAgentSkills, stripSkillCommands, type CatalogAgentSkill } from '~~/shared/utils/agentSkills'
-import { isMediaVideoUrl } from '~~/shared/utils/seedance25'
+import { isMediaAudioUrl, isMediaDocumentUrl, isMediaVideoUrl, mediaDocumentLabel } from '~~/shared/utils/seedance25'
 import { SKETCH_TO_IMAGE_TOOL } from '~~/shared/utils/sketchToImage'
 import { agentComposerPlaceholder } from '~/utils/agentComposerPlaceholder'
 import { confirmationWorking } from '~/utils/agentConfirmationState'
@@ -73,6 +73,7 @@ const emit = defineEmits<{
         items: Array<{
           url: string
           name: string
+          kind?: 'image' | 'audio' | 'video' | 'document'
         }>,
   ]
   removeAttachment: [
@@ -159,21 +160,24 @@ const modelMatches = computed(() => {
       : terms.every(term => `${model.name} ${model.task} ${model.id}`.toLowerCase().includes(term))))
 })
 const projectAssets = computed(() => {
-  const result = new Map<string, {
-    id: string
-    name: string
-    url: string
-    video: boolean
-  }>()
+  const result = new Map<string, { id: string, name: string, url: string, video: boolean, audio: boolean, document: boolean }>()
   for (const job of props.projectJobs) {
     for (const [index, url] of job.resultUrls.entries()) {
-      if (url)
-        result.set(url, { id: `${job.taskId}:${index}`, url, name: job.layers?.[index]?.name || String(job.input.asset_name || job.prompt || job.model).slice(0, 100), video: job.category === 'Video' || isMediaVideoUrl(url) })
+      if (!url)
+        continue
+      const audio = isMediaAudioUrl(url)
+      const video = !audio && (job.category === 'Video' || isMediaVideoUrl(url))
+      const document = !audio && !video && isMediaDocumentUrl(url)
+      result.set(url, { id: `${job.taskId}:${index}`, url, name: job.layers?.[index]?.name || String(job.input.asset_name || job.prompt || job.model).slice(0, 100), video, audio, document })
     }
   }
   for (const image of [...(props.projectImages || []), ...props.images]) {
-    if (image.url && !result.has(image.url))
-      result.set(image.url, { id: image.id, url: image.url, name: image.name || image.prompt.slice(0, 100) || 'Untitled asset', video: image.kind === 'video' || isMediaVideoUrl(image.url) })
+    if (image.url && !result.has(image.url)) {
+      const audio = image.kind === 'audio' || isMediaAudioUrl(image.url)
+      const video = !audio && (image.kind === 'video' || isMediaVideoUrl(image.url))
+      const document = !audio && !video && (image.kind === 'document' || isMediaDocumentUrl(image.url) || /\.(pdf|docx?|pptx?|xlsx?|csv)$/i.test(image.name || ''))
+      result.set(image.url, { id: image.id, url: image.url, name: image.name || image.prompt.slice(0, 100) || 'Untitled asset', video, audio, document })
+    }
   }
   return [...result.values()]
 })
@@ -275,6 +279,7 @@ const presentedMessages = computed(() => presentAgentResults(props.messages, mes
 const visibleMessages = computed(() => presentedMessages.value.slice(-visibleMessageCount.value))
 let loadingCachedHistory = false
 watch(() => props.sessionId, () => { visibleMessageCount.value = 40 })
+
 const STICKY_THRESHOLD = 96
 const scroller = ref<HTMLElement | null>(null)
 const transcript = ref<HTMLElement | null>(null)
@@ -534,17 +539,20 @@ async function closeSketch() {
 
 async function mentionModel(modelId: string) {
   const model = AGENT_MODELS.find(item => item.id === modelId)
-  if (!model || composerLocked.value)
+  if (!model)
     return
   const skill = skillCatalog.value.find(item => item.id === modelId) || PUBLIC_AGENT_SKILLS.find(item => item.id === modelId)
   if (skill) {
     await mentionSkill(skill.id)
     return
   }
+  // Still insert when locked so homepage / deep links are not no-ops (same as mentionSkill).
   draft.value = [modelMention(model), composerText.value].join(' ')
   qualityPreference.value = 'custom'
   mention.value = null
   await nextTick()
+  if (composerLocked.value)
+    return
   composerElement?.focus({ preventScroll: true })
 }
 async function mentionTask(task: string) {
@@ -607,7 +615,7 @@ async function selectAsset(asset: typeof projectAssets.value[number]) {
     return
   const { start, end } = mention.value
   composerText.value = `${composerText.value.slice(0, start)}${composerText.value.slice(end)}`
-  emit('attachAsset', [{ url: asset.url, name: asset.name }])
+  emit('attachAsset', [{ url: asset.url, name: asset.name, kind: asset.audio ? 'audio' : asset.video ? 'video' : asset.document ? 'document' : 'image' }])
   mention.value = null
   await nextTick()
   composerElement?.focus()
@@ -626,9 +634,34 @@ async function selectModel(model: AiModelConfig) {
   composerElement?.setSelectionRange(start, start)
 }
 const { open: openMedia } = useMediaLightbox()
+
+function isAudioAttachment(item: PendingAttachment) {
+  if (item.kind === 'audio')
+    return true
+  return /\.(mp3|wav|aac|ogg|m4a)$/i.test(item.name || '')
+}
+
+function isDocumentAttachment(item: PendingAttachment) {
+  if (item.kind === 'document')
+    return true
+  if (item.url && isMediaDocumentUrl(item.url))
+    return true
+  return /\.(pdf|docx?|pptx?|xlsx?|csv)$/i.test(item.name || '')
+}
+
+function isVideoAttachment(item: PendingAttachment) {
+  if (item.kind === 'video')
+    return true
+  return /\.(mp4|mov|mkv|webm)$/i.test(item.name || '')
+}
+
 function openAttachment(item: PendingAttachment) {
   if (!item.previewUrl && !item.url)
     return
+  if (isDocumentAttachment(item)) {
+    openMedia({ url: item.url || item.previewUrl || '', kind: 'document', alt: item.name || 'Document' })
+    return
+  }
   openMedia({
     url: item.previewUrl || item.url,
     kind: 'image',
@@ -695,7 +728,7 @@ function layerSourceImages(message: AgentChatMessage) {
     const previous = props.messages.slice(0, index).reverse()
     const request = previous.find(item => item.role === 'user')
     const stills = (item: AgentChatMessage) => messageMedia(item, props.images)
-      .filter(image => image.status === 'success' && image.url && image.kind !== 'video' && !isMediaVideoUrl(image.url))
+      .filter(image => image.status === 'success' && image.url && image.kind !== 'video' && image.kind !== 'audio' && image.kind !== 'document' && !isMediaVideoUrl(image.url))
       .map(image => ({ id: image.id, url: image.url! }))
     if (request) {
       const attached = stills(request)
@@ -714,7 +747,7 @@ function layerSourceImages(message: AgentChatMessage) {
   for (const item of props.messages.slice(0, index).reverse()) {
     if (item.role !== 'user')
       continue
-    const images = messageMedia(item, props.images).filter(image => image.url && image.kind !== 'video' && !isMediaVideoUrl(image.url))
+    const images = messageMedia(item, props.images).filter(image => image.url && image.kind !== 'video' && image.kind !== 'audio' && image.kind !== 'document' && !isMediaVideoUrl(image.url))
     if (images.length)
       return images.map(image => ({ id: image.id, url: image.url! }))
   }
@@ -754,8 +787,25 @@ function onComposerPaste(event: ClipboardEvent) {
   if (!composerLocked.value)
     emit('attach', files)
 }
+
+// IME (Chinese/Japanese) candidate confirmation also presses Enter. Safari fires that
+// keydown after compositionend with isComposing=false, so track composition ourselves.
+const draftComposing = ref(false)
+let draftCompositionEndAt = 0
+function onDraftCompositionStart() {
+  draftComposing.value = true
+}
+function onDraftCompositionEnd() {
+  draftComposing.value = false
+  draftCompositionEndAt = Date.now()
+}
+function isImeKeyEvent(event: KeyboardEvent) {
+  return event.isComposing || event.keyCode === 229 || draftComposing.value || Date.now() - draftCompositionEndAt < 80
+}
+
 function onDraftKeydown(event: KeyboardEvent) {
-  if (mention.value && !event.isComposing) {
+  const imeActive = isImeKeyEvent(event)
+  if (mention.value && !imeActive) {
     if (event.key === 'Escape') {
       event.preventDefault()
       mention.value = null
@@ -800,7 +850,7 @@ function onDraftKeydown(event: KeyboardEvent) {
       }
     }
   }
-  if (event.key !== 'Enter' || event.shiftKey || event.repeat || event.isComposing)
+  if (event.key !== 'Enter' || event.shiftKey || event.repeat || imeActive)
     return
   event.preventDefault()
   if (canSend.value)
@@ -994,10 +1044,11 @@ function setActiveAgent(value: unknown) {
               :state="message.choiceState"
               :answers="message.choiceAnswers"
               :source-images="layerSourceImages(message)"
-              :reference-images="projectAssets.filter(asset => !asset.video)"
+              :reference-images="projectAssets.filter(asset => !asset.video && !asset.audio && !asset.document)"
               :upload-image="uploadAnnotationImage"
-              @browse-assets="emit('browseAssets')"
+              :upload-audio="uploadAnnotationImage"
               :pending="pending && !choiceOpen"
+              @browse-assets="emit('browseAssets')"
               @submit="emit('submitChoice', $event)"
               @skip="emit('skipChoice')"
             />
@@ -1097,10 +1148,34 @@ function setActiveAgent(value: unknown) {
           <button
             type="button"
             class="block size-14 overflow-hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            :aria-label="`View ${item.name}`"
+            :aria-label="isDocumentAttachment(item) ? `Document ${item.name}` : isAudioAttachment(item) ? `Voice reference ${item.name}` : isVideoAttachment(item) ? `Video reference ${item.name}` : `View ${item.name}`"
             @click="openAttachment(item)"
           >
+            <div
+              v-if="isDocumentAttachment(item)"
+              class="flex size-14 flex-col items-center justify-center gap-0.5 bg-muted px-1 text-muted-foreground"
+              :title="item.name"
+            >
+              <Icon name="lucide:file-text" class="size-5" />
+              <span class="w-full truncate text-center text-[9px] leading-none">{{ item.name }}</span>
+            </div>
+            <div
+              v-else-if="isAudioAttachment(item)"
+              class="flex size-14 items-center justify-center bg-muted text-muted-foreground"
+              :title="item.name"
+            >
+              <span class="text-lg" aria-hidden="true">♪</span>
+            </div>
+            <video
+              v-else-if="isVideoAttachment(item)"
+              :src="item.previewUrl || item.url"
+              muted
+              playsinline
+              preload="metadata"
+              class="size-14 object-cover"
+            />
             <img
+              v-else
               :src="item.previewUrl"
               :alt="item.name"
               class="size-14 object-cover"
@@ -1194,9 +1269,18 @@ function setActiveAgent(value: unknown) {
                   :class="mentionColumn === 'assets' && index === mentionIndex ? 'bg-accent text-accent-foreground' : ''"
                   @click="selectAsset(asset)"
                 >
-                  <Icon v-if="asset.video" name="lucide:clapperboard" class="size-9 shrink-0" />
+                  <Icon v-if="asset.audio" name="lucide:music" class="size-9 shrink-0 text-muted-foreground" />
+                  <Icon v-else-if="asset.document" name="lucide:file-text" class="size-9 shrink-0 text-muted-foreground" />
+                  <video
+                    v-else-if="asset.video"
+                    :src="asset.url"
+                    muted
+                    playsinline
+                    preload="metadata"
+                    class="size-9 shrink-0 rounded object-cover bg-muted/40"
+                  />
                   <img v-else :src="asset.url" alt="" loading="lazy" class="size-9 shrink-0 rounded object-contain">
-                  <span class="min-w-0"><span class="block truncate text-sm font-medium" :title="asset.name">{{ asset.name }}</span><span class="block text-xs text-muted-foreground">{{ asset.video ? 'Video' : 'Image' }}</span></span>
+                  <span class="min-w-0"><span class="block truncate text-sm font-medium" :title="asset.name">{{ asset.name }}</span><span class="block text-xs text-muted-foreground">{{ asset.audio ? 'Audio' : asset.document ? mediaDocumentLabel(asset.name || asset.url) : asset.video ? 'Video' : 'Image' }}</span></span>
                 </button>
                 <p v-if="projectAssetsLoading" class="px-3 py-2 text-xs text-muted-foreground" role="status">
                   Loading project assets…
@@ -1234,6 +1318,8 @@ function setActiveAgent(value: unknown) {
           @keyup.right="!mention && updateMention($event)"
           @blur="mention = null"
           @keydown="onDraftKeydown"
+          @compositionstart="onDraftCompositionStart"
+          @compositionend="onDraftCompositionEnd"
         />
         <InputGroupAddon
           align="block-end"
@@ -1243,7 +1329,7 @@ function setActiveAgent(value: unknown) {
           <input
             ref="fileInput"
             type="file"
-            accept="image/jpeg,image/png,image/webp,image/gif"
+            accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/quicktime,video/webm,video/x-matroska,audio/mpeg,audio/mp3,audio/wav,audio/x-wav,audio/aac,audio/ogg,audio/mp4,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv,.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.csv"
             multiple
             class="sr-only"
             @change="onPickFiles"

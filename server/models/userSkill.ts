@@ -1,4 +1,7 @@
+import type { SkillCategory } from '../../shared/utils/skillCategory'
 import { defineCollection } from '../utils/sqlite'
+
+export type UserSkillCategory = SkillCategory
 
 export type UserSkillSource = 'user' | 'imported'
 export type UserSkillVisibility = 'private' | 'public'
@@ -14,6 +17,8 @@ export interface IUserSkill {
   status: UserSkillStatus
   enabled: boolean
   visibility: UserSkillVisibility
+  /** utility | fun. Missing/null (legacy rows) is treated as utility. */
+  category?: UserSkillCategory | null
   version: string
   contentHash: string
   source: UserSkillSource

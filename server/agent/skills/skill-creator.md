@@ -2,7 +2,7 @@
 id: skill-creator
 name: Skill Creator
 description: Guided flow to author, validate, and save an L1 user skill that only orchestrates existing tools.
-version: 1.1.0
+version: 1.2.0
 source: builtin
 visibility: catalog
 triggers:
@@ -27,9 +27,10 @@ Use when the user invokes `/skill-creator`, chooses **Create Skill** on the home
 
 - L1 skills cannot recreate specialty UIs that need boxes, masks, or coordinate editors (Image Layer Splitter, Image Text Editor, Image Object Removal, Sketch to Image, Annotated Image Edit, etc.). For those, compose the existing `/skill-id` or ask them to open a GitHub Issue for new UI.
 - User skills **must not** reuse builtin skill ids.
-- **Skill id and `/` triggers must be English kebab-case** (`/^[a-z][a-z0-9-]{1,63}$/`). Display **name** and **description** may use any language.
+- **Skill id and `/` triggers must be English kebab-case** (`/^[a-z][a-z0-9-]{1,63}$/`).
+- **Display name and catalog description must be English** for every candidate you invent (option labels and their short descriptions). Do not offer non-English name/description recommendations. If the user types Other in another language, gently ask for an English version before saving.
 - **Never exit while the skill is still `untitled-*` / "Untitled Skill".** Choose a real display name and `/` trigger (via `check_skill_id`) and save them **before** the exit ask_user.
-- `requires` may only list registered tool names (`ask_user`, `generate_image`, `generate_video`, `remove_background`, `concat_videos`, `inspect_website`, `export_zip`, `load_skill`, `save_user_skill`, `check_skill_id`, `exit_skill_creator`, and `model_*` tools). Only this meta-skill may call `save_user_skill` / `exit_skill_creator`.
+- `requires` may only list registered tool names (`ask_user`, `generate_image`, `generate_video`, `remove_background`, `concat_videos`, `measure_video_duration`, `extract_video_frame`, `inspect_website`, `export_zip`, `load_skill`, `save_user_skill`, `check_skill_id`, `exit_skill_creator`, and `model_*` tools). Only this meta-skill may call `save_user_skill` / `exit_skill_creator`.
 - Cap generations with `safety.maxGenerationsPerRun` (default 3, max 20).
 - Imports arrive **disabled** until the user enables them.
 - **Skill Creator only edits/saves skill content.** Do **not** ask about enable/disable/delete mid-flow. Final exit always **Enables** the skill.
@@ -47,8 +48,9 @@ After the requirement looks solid, call `ask_user` once with question id `more_c
 ### 6. Choose display name and `/` trigger (only after step 5)
 
 1. Invent **2–3** candidate pairs of:
-   - display **name** (any language)
+   - display **name** (**English only** — short product-style title, e.g. Motion Transfer Video)
    - English kebab-case **id** (same as `/id` trigger)
+   - Each name option's short description must also be **English** (e.g. Clear and descriptive.)
 2. **Before** showing them, call `check_skill_id` for **each** candidate (`id` + `name`).
 3. Only offer candidates where both `id.ok` and `name.ok` are true.
 4. Show one `ask_user` for the **display name** and **`/` trigger / id** (include Other).
@@ -58,7 +60,7 @@ After the requirement looks solid, call `ask_user` once with question id `more_c
 
 ### 7. Catalog description (after name and `/` trigger)
 
-Call `ask_user` once with question id `skill_description`. Offer 2–3 short candidates plus Other. Use the confirmed line as frontmatter `description`.
+Call `ask_user` once with question id `skill_description`. Offer 2–3 short **English** candidates plus Other (never propose non-English description options). Use the confirmed line as frontmatter `description`.
 
 ### 8. Cover image (optional — keep simple)
 
@@ -76,11 +78,35 @@ Call `ask_user` once with question id `skill_cover`:
    - On validation errors, fix and retry with the **same** final id (never leave a second untitled card).
 3. Do **not** ask about enable/disable/delete.
 
-### 10. Exit — Enable & leave, or Enable & test
+### 10. Category — Utility or Fun (last question before the exit)
+
+**First judge the category yourself** from the confirmed purpose and content of the skill (do this silently, before asking):
+
+- **Utility** — functional / productivity: editing, design or marketing assets, documents, conversions, business or practical output.
+- **Fun** — entertainment / playful / novelty: memes, jokes, character or pet play, avatars for fun, games, surprise effects, just-for-fun creations.
+- If it is genuinely mixed or unclear, judge **Utility**.
+
+Then, right before the final exit, call `ask_user` with question id `skill_category` (every time — new skills and edits) and let the user choose:
+
+- Prompt: which homepage Skills category this skill belongs in.
+- Options (exactly these two ids, no Other needed):
+  - `utility` — label **Utility**; description: functional / productivity use.
+  - `fun` — label **Fun**; description: entertainment / playful use.
+- Mark your judgment as recommended:
+  - Put the judged option **first**.
+  - Set the question's `recommended` field to its id. The card then shows a "Suggested" badge.
+  - Append ` (Recommended)` to its label, e.g. `Utility (Recommended)`.
+  - Replace its description with a **one-line reason** tied to this skill, e.g. `Recommended: it produces App Store marketing graphics — a practical, productivity task.`
+  - The other option keeps its plain label and generic description.
+- When editing, `INTERNAL_EDIT_CONTEXT` includes `Current skill category`. Re-judge from the (possibly changed) purpose; if your judgment differs from the current category, mention that briefly in the reason.
+- **Save the user's choice, not your judgment**. The chosen option id is `utility` or `fun` (ignore the "(Recommended)" label text). Pass it on the final save in step 11 (`save_user_skill` `category: "utility" | "fun"`) and on `exit_skill_creator` (`category`). If they skip the question, use your recommended id. Category is stored on the skill record, not in SKILL.md, so always pass it via the tool field.
+- You may ask `skill_category` and `exit_skill_creator` in the **same** `ask_user` call (two questions: `skill_category` first, then `exit_skill_creator`) to keep the finish to one step.
+
+### 11. Exit — Enable & leave, or Enable & test
 
 **Prerequisite:** the skill already has a final non-untitled id and display name (step 6 saved). Never call `exit_skill_creator` while id still matches `untitled-*` or name is still "Untitled Skill…".
 
-After the skill content is ready, call `ask_user` once with question id `exit_skill_creator`:
+After the skill content is ready and the category is chosen, call `ask_user` once with question id `exit_skill_creator` (or combine with step 10 as described above):
 
 - **Wording ban:** Never say "Publish", "Published", or "Publishing" in any user-facing text. Always say **Enable** / **Enabled** / **Enabling**.
 - Prompt example: `The update is ready to save. If you skip, I'll enable and open Test mode so you can verify.`
@@ -89,8 +115,8 @@ After the skill content is ready, call `ask_user` once with question id `exit_sk
   - `test_now` — label: **Enable & test now** — description: **Enable the updated skill and open Test mode so you can try it again.**
   - `save_and_exit` — label: **Enable & exit** — description: **Enable the updated skill and return to Skills.**
 - For either choice:
-  1. Call `save_user_skill` with `enabled: true` (and overwrite when updating) using the **final** id/name.
-  2. Then call `exit_skill_creator` with the matching action (`save_and_exit` or `test_now`).
+  1. Call `save_user_skill` with `enabled: true` (and overwrite when updating) using the **final** id/name, and `category` from step 10.
+  2. Then call `exit_skill_creator` with the matching action (`save_and_exit` or `test_now`) and the same `category`.
 - The exit tool force-enables the bound skill (`status: published`, `enabled: true`), then navigates:
   - `save_and_exit` → `/skills`
   - `test_now` → `/projects/<projectId>?mode=agent&skillMode=test` (UI must switch to the Test tab)
@@ -133,7 +159,8 @@ When the user opens **Edit** from Skills (`/skills`), the composer is prefilled 
 2. Discuss the requested changes with `ask_user` when intent is unclear.
 3. Produce an updated `SKILL.md` that keeps the same `id` (unless they explicitly ask to rename — then follow step 6 with `except_skill_id`).
 4. Confirm with `ask_user`, then call `save_user_skill` with that same id (`enabled: true` when finishing).
-5. Finish with the exit ask_user (`save_and_exit` or `test_now`), then call `exit_skill_creator` with that action.
+5. Ask the category with step 10: judge Utility / Fun yourself first, then ask `skill_category` with your judgment first, marked `recommended`, with a one-line reason. Save the user's choice.
+6. Finish with the exit ask_user (`save_and_exit` or `test_now`), saving with the chosen `category`, then call `exit_skill_creator` with that action and `category`.
 
 Never create a duplicate skill when an edit brief is present. If validation fails, fix the draft and retry `save_user_skill` with the same id.
 

@@ -2,15 +2,41 @@ import type { ModelGeneration } from './models'
 import type { AgentSession, PendingToolItem } from './session'
 import type { SlotMeta } from './slots'
 import type { AgentConfirmPolicy, AgentEvent, AgentImage, AskUserArgs, ChatMessage, ChoiceAnswer, ChoiceBody, ConfirmationPayload, ConfirmBody, GenerateImageArgs, ResolvedGenerateVideo, ResolvedRemoveBackground, ToolCall, UserContentPart } from './types'
+import { eligibleAutoRetryFails, parseAutoRetryIds, stripAutoRetryIds } from '~~/shared/utils/agentAutoRetry'
+import { INTERNAL_AUTO_RETRY_MARKER } from '~~/shared/utils/agentChatVisibility'
 import { standaloneImageEditQuestions, withCustomChoiceOption } from '~~/shared/utils/agentChoices'
 import { validateLayerSelection, validateLayerSelections } from '~~/shared/utils/agentLayerSelection'
 import { AGENT_MODELS, findAgentModelTool, readModelMentions, registeredModelTools } from '~~/shared/utils/agentModels'
 import { validateImageAnnotationEdit } from '~~/shared/utils/imageAnnotations'
 import { validateObjectRemovalEdit } from '~~/shared/utils/imageObjectRemoval'
 import { validateTextEditAnswer, validateTextEditAnswers } from '~~/shared/utils/imageTextEditor'
+import { normalizeSkillCategory, parseSkillCategoryInput, type SkillCategory } from '~~/shared/utils/skillCategory'
 import { validateAnnotationReferences, validateProjectImageReferences } from './annotationReferences'
 import { concatVideoUrls } from './concat'
 import { EXPORT_ZIP_TOOL, exportSessionZip, resolveZipExport } from './exportZip'
+import { MEASURE_VIDEO_DURATION_TOOL, parseMeasureVideoDurationArgs, runMeasureVideoDuration, type MeasureVideoDurationItem } from './measureVideoDuration'
+import {
+  DOCUMENT_IMAGES_TOOL,
+  DOCUMENT_META_TOOL,
+  DOCUMENT_PAGE_IMAGE_TOOL,
+  DOCUMENT_SEARCH_TOOL,
+  DOCUMENT_TEXT_TOOL,
+  parseDocumentImagesArgs,
+  parseDocumentMetaArgs,
+  parseDocumentPageImageArgs,
+  parseDocumentSearchArgs,
+  parseDocumentTextArgs,
+  runDocumentImagesTool,
+  runDocumentMetaTool,
+  runDocumentPageImageTool,
+  runDocumentSearchTool,
+  runDocumentTextTool,
+} from './documentTools'
+import {
+  EXTRACT_VIDEO_FRAME_TOOL,
+  extractVideoFrame,
+  parseExtractVideoFrameArgs,
+} from './extractVideoFrame'
 import { removeBackground } from './fal'
 import { renderAnnotationImage } from './imageAnnotations'
 import { renderObjectRemovalOverlay } from './imageObjectRemoval'
@@ -25,16 +51,20 @@ import { MAX_STEPS } from './policy'
 import { applyImageQuality, applyVideoQuality, clampVideoToFamily, parseAgentConfirmPolicy, parseAgentQuality, parseVideoFamily } from './quality'
 import { restoreSessionContext } from './restore'
 import { scheduleSessionResume } from './resume'
-import { isBuiltinSkillId, isValidSkillId, loadSkillDocument, parseSkillSlashIds } from './skills'
+import { isBuiltinSkillId, isHiddenBuiltinSkill, isValidSkillId, loadSkillDocument, parseSkillSlashIds, promptHasLoadedSkill } from './skills'
 import { getUserSkillByProjectId, getUserSkillRecord, isSkillIdTaken, isSkillNameTaken, listUserSkillRecords, persistUserSkill, publishAndEnableUserSkill } from '../utils/userSkills'
 import { bindSkillProject, ensureSkillProject, resolveProject } from '../utils/projects'
 import { choiceAlreadyAnswered, confirmationAlreadyStarted, persistNow, refreshSessionPrompt, requireLoadedSession, requireSession, resolveChatSession, touch, upsertImage } from './session'
 import { assertSketchQuestion, sketchBrief, sketchGenerationSubmitted, validateSketchReferences } from './sketchBrief'
 import { acquireGenerationSlot, bindGenerationSlot, completeGenerationSlot, waitForGenerationSlot } from './slots'
 import { summarizeSessionTitle } from './title'
-import { ASK_USER_TOOL, CHECK_SKILL_ID_TOOL, CONCAT_VIDEO_TOOL, EXIT_SKILL_CREATOR_TOOL, GENERATE_IMAGE_TOOL, GENERATE_VIDEO_TOOL, LOAD_SKILL_TOOL, openAiTools, SAVE_USER_SKILL_TOOL, parseAskUserArgs, parseCheckSkillIdArgs, parseConcatVideoArgs, parseExitSkillCreatorArgs, parseGenerateImageArgs, parseGenerateVideoArgs, parseRemoveBackgroundArgs, REMOVE_BACKGROUND_TOOL, resolveConcatVideoUrls, resolveGenerateImageArgs, resolveGenerateVideoArgs, resolveRemoveBackgroundSource } from './tools'
+import { ASK_USER_TOOL, CHECK_SKILL_ID_TOOL, CONCAT_VIDEO_TOOL, EXIT_SKILL_CREATOR_TOOL, GENERATE_IMAGE_TOOL, GENERATE_VIDEO_TOOL, LOAD_SKILL_TOOL, openAiTools, SAVE_USER_SKILL_TOOL, SET_SKILL_COVER_TOOL, parseAskUserArgs, parseCheckSkillIdArgs, parseConcatVideoArgs, parseExitSkillCreatorArgs, parseGenerateImageArgs, parseGenerateVideoArgs, parseRemoveBackgroundArgs, REMOVE_BACKGROUND_TOOL, resolveConcatVideoUrls, resolveGenerateImageArgs, resolveGenerateVideoArgs, resolveRemoveBackgroundSource, resolveSessionVideo, parseRequestVoiceRecordingArgs, REQUEST_VOICE_RECORDING_TOOL, voiceRecordingAskArgs } from './tools'
 import { isMediaAudioUrl, isMediaVideoUrl } from '~~/shared/utils/seedance25'
 import { agentMediaKindForMime, uploadAgentImage, uploadAgentMedia } from './upload'
+import { resolveSkillCoverUrl } from './skillCoverTool'
+import { isStoredMediaUrl } from '../utils/localMedia'
+import { setUserSkillCover } from '../utils/userSkillCover'
+import { ensureReferenceAudioMp3Url } from '../utils/convertAudioToMp3'
 import { inspectWebsite } from './websiteInspection'
 
 type Emit = (event: AgentEvent) => void
@@ -694,6 +724,79 @@ async function runVideos(sessionId: string, jobs: Array<{
     appendToolResult(sessionId, job.toolCallId, results[index] || JSON.stringify({ ok: false, error: 'Empty tool result' }))
   })
 }
+
+async function runExtractVideoFrame(
+  sessionId: string,
+  callId: string,
+  input: { videoUrl: string, which: 'first' | 'last' | 'at_seconds', seconds?: number },
+  emit: Emit,
+  signal?: AbortSignal,
+) {
+  const session = requireSession(sessionId)
+  const name = input.which === 'first'
+    ? 'first_frame'
+    : input.which === 'last'
+      ? 'last_frame'
+      : `frame_at_${input.seconds ?? 0}s`
+  const image = {
+    id: callId,
+    kind: 'still' as const,
+    status: 'generating' as const,
+    name,
+    prompt: `Extracted ${input.which} frame`,
+    aspectRatio: 'auto',
+    resolution: '',
+    url: '',
+    error: '',
+  }
+  upsertImage(session, image)
+  emit({ type: 'status', status: 'generating' })
+  emit({ type: 'image', image })
+  emit({ type: 'tool', name: EXTRACT_VIDEO_FRAME_TOOL, status: 'start', callId })
+
+  try {
+    const result = await extractVideoFrame(input.videoUrl, input.which, input.seconds, signal)
+    const next = {
+      ...image,
+      status: 'success' as const,
+      url: result.image_url,
+      name: result.name,
+    }
+    upsertImage(session, next)
+    emit({ type: 'image', image: next })
+    return JSON.stringify(result)
+  }
+  catch (error) {
+    const message = error instanceof Error ? error.message : 'Frame extract failed'
+    const next = {
+      ...image,
+      status: 'fail' as const,
+      error: message,
+    }
+    upsertImage(session, next)
+    emit({ type: 'image', image: next })
+    return JSON.stringify({ ok: false, error: message })
+  }
+  finally {
+    emit({ type: 'tool', name: EXTRACT_VIDEO_FRAME_TOOL, status: 'end', callId })
+  }
+}
+
+async function runExtractVideoFrames(
+  sessionId: string,
+  jobs: Array<{ toolCallId: string, videoUrl: string, which: 'first' | 'last' | 'at_seconds', seconds?: number }>,
+  emit: Emit,
+  signal?: AbortSignal,
+) {
+  if (!jobs.length)
+    return
+  emit({ type: 'status', status: 'generating' })
+  for (const job of jobs) {
+    const result = await runExtractVideoFrame(sessionId, job.toolCallId, job, emit, signal)
+    appendToolResult(sessionId, job.toolCallId, result)
+  }
+}
+
 async function runConcat(sessionId: string, callId: string, urls: string[], emit: Emit, signal?: AbortSignal) {
   const session = requireSession(sessionId)
   const image = {
@@ -962,6 +1065,7 @@ function queueGenerationWork(sessionId: string, items: PendingToolItem[], emit: 
 function queueAskUser(sessionId: string, items: Array<{
   toolCallId: string
   args: AskUserArgs
+  tool?: string
 }>, emit: Emit) {
   const session = requireSession(sessionId)
   const first = items[0]
@@ -999,7 +1103,7 @@ function queueAskUser(sessionId: string, items: Array<{
     payload,
     items: items.map(item => ({
       toolCallId: item.toolCallId,
-      tool: ASK_USER_TOOL,
+      tool: item.tool || ASK_USER_TOOL,
       argsJson: JSON.stringify(item.args),
     })),
   }
@@ -1029,6 +1133,36 @@ async function dispatchToolCalls(sessionId: string, toolCalls: ToolCall[], emit:
     urls: string[]
   } | {
     call: ToolCall
+    kind: 'extract_frame'
+    videoUrl: string
+    which: 'first' | 'last' | 'at_seconds'
+    seconds?: number
+  } | {
+    call: ToolCall
+    kind: 'measure_duration'
+    items: MeasureVideoDurationItem[]
+  } | {
+    call: ToolCall
+    kind: 'document_meta'
+    url: string
+  } | {
+    call: ToolCall
+    kind: 'document_text'
+    args: ReturnType<typeof parseDocumentTextArgs>
+  } | {
+    call: ToolCall
+    kind: 'document_search'
+    args: ReturnType<typeof parseDocumentSearchArgs>
+  } | {
+    call: ToolCall
+    kind: 'document_page_image'
+    args: ReturnType<typeof parseDocumentPageImageArgs>
+  } | {
+    call: ToolCall
+    kind: 'document_images'
+    args: ReturnType<typeof parseDocumentImagesArgs>
+  } | {
+    call: ToolCall
     kind: 'zip'
     input: ReturnType<typeof resolveZipExport>
   } | {
@@ -1049,11 +1183,17 @@ async function dispatchToolCalls(sessionId: string, toolCalls: ToolCall[], emit:
     call: ToolCall
     kind: 'exit_skill_creator'
     action: 'save_and_exit' | 'test_now'
+    category?: SkillCategory
+  } | {
+    call: ToolCall
+    kind: 'set_skill_cover'
+    url: string
   } | {
     call: ToolCall
     kind: 'save_user_skill'
     markdown: string
     enabled?: boolean
+    category?: SkillCategory
   } | {
     call: ToolCall
     kind: 'error'
@@ -1128,9 +1268,58 @@ async function dispatchToolCalls(sessionId: string, toolCalls: ToolCall[], emit:
       }
       if (call.function.name === EXPORT_ZIP_TOOL)
         return { call, kind: 'zip', input: resolveZipExport(call.function.arguments, session.images) }
+      if (call.function.name === MEASURE_VIDEO_DURATION_TOOL) {
+        const args = parseMeasureVideoDurationArgs(call.function.arguments)
+        const items = args.videos.map((token, index) => {
+          const asset = resolveSessionVideo(token, session.images, `videos[${index}]`)
+          return {
+            token: token.trim(),
+            url: asset.url,
+            id: asset.id || undefined,
+            name: asset.name || undefined,
+          }
+        })
+        return { call, kind: 'measure_duration', items }
+      }
+      if (call.function.name === DOCUMENT_META_TOOL) {
+        const args = parseDocumentMetaArgs(call.function.arguments)
+        return { call, kind: 'document_meta', url: args.url }
+      }
+      if (call.function.name === DOCUMENT_TEXT_TOOL) {
+        const args = parseDocumentTextArgs(call.function.arguments)
+        return { call, kind: 'document_text', args }
+      }
+      if (call.function.name === DOCUMENT_SEARCH_TOOL) {
+        const args = parseDocumentSearchArgs(call.function.arguments)
+        return { call, kind: 'document_search', args }
+      }
+      if (call.function.name === DOCUMENT_PAGE_IMAGE_TOOL) {
+        const args = parseDocumentPageImageArgs(call.function.arguments)
+        return { call, kind: 'document_page_image', args }
+      }
+      if (call.function.name === DOCUMENT_IMAGES_TOOL) {
+        const args = parseDocumentImagesArgs(call.function.arguments)
+        return { call, kind: 'document_images', args }
+      }
+
+      if (call.function.name === EXTRACT_VIDEO_FRAME_TOOL) {
+        const args = parseExtractVideoFrameArgs(call.function.arguments)
+        const video = resolveSessionVideo(args.video, session.images, 'video')
+        return {
+          call,
+          kind: 'extract_frame' as const,
+          videoUrl: video.url,
+          which: args.which,
+          seconds: args.seconds,
+        }
+      }
+      if (call.function.name === SET_SKILL_COVER_TOOL) {
+        const parsed = JSON.parse(call.function.arguments || '{}') as { url?: unknown }
+        return { call, kind: 'set_skill_cover', url: typeof parsed.url === 'string' ? parsed.url : '' }
+      }
       if (call.function.name === EXIT_SKILL_CREATOR_TOOL) {
         const parsed = parseExitSkillCreatorArgs(call.function.arguments)
-        return { call, kind: 'exit_skill_creator', action: parsed.action }
+        return { call, kind: 'exit_skill_creator', action: parsed.action, category: parsed.category }
       }
       if (call.function.name === CHECK_SKILL_ID_TOOL) {
         const parsed = parseCheckSkillIdArgs(call.function.arguments)
@@ -1147,14 +1336,18 @@ async function dispatchToolCalls(sessionId: string, toolCalls: ToolCall[], emit:
         return { call, kind: 'load_skill', id }
       }
       if (call.function.name === SAVE_USER_SKILL_TOOL) {
-        const parsed = JSON.parse(call.function.arguments || '{}') as { markdown?: string, enabled?: boolean }
-        return { call, kind: 'save_user_skill', markdown: String(parsed.markdown || ''), enabled: parsed.enabled }
+        const parsed = JSON.parse(call.function.arguments || '{}') as { markdown?: string, enabled?: boolean, category?: unknown }
+        return { call, kind: 'save_user_skill', markdown: String(parsed.markdown || ''), enabled: parsed.enabled, category: parseSkillCategoryInput(parsed.category) || undefined }
       }
       if (call.function.name === CONCAT_VIDEO_TOOL) {
         const args = parseConcatVideoArgs(call.function.arguments)
         return { call, kind: 'concat', urls: resolveConcatVideoUrls(args, session.images) }
       }
-            if (call.function.name === ASK_USER_TOOL) {
+      if (call.function.name === REQUEST_VOICE_RECORDING_TOOL) {
+        const parsed = parseRequestVoiceRecordingArgs(call.function.arguments)
+        return { call, kind: 'ask', args: voiceRecordingAskArgs(parsed.script, parsed.prompt) }
+      }
+      if (call.function.name === ASK_USER_TOOL) {
         const args = parseAskUserArgs(call.function.arguments)
         assertSketchQuestion(session.messages, args.questions)
         if (args.questions.some(question => ['layer_selection_method', 'layer_split_plan', 'layer_split_confirm'].includes(question.id)) && !hasLayerSourceImage(session.messages, session.images))
@@ -1172,29 +1365,42 @@ async function dispatchToolCalls(sessionId: string, toolCalls: ToolCall[], emit:
     if (item.kind === 'error')
       appendToolResult(sessionId, item.call.id, item.result)
   }
-  const exports = prepared.filter((item): item is Extract<Prepared, {
-    kind: 'zip'
-  }> => item.kind === 'zip')
-  const concats = prepared.filter((item): item is Extract<Prepared, {
-    kind: 'concat'
-  }> => item.kind === 'concat')
-  const asks = prepared.filter((item): item is Extract<Prepared, {
-    kind: 'ask'
-  }> => item.kind === 'ask')
-  const generation = prepared.filter((item): item is Exclude<Prepared, {
-    kind: 'error' | 'concat' | 'ask' | 'zip' | 'load_skill' | 'save_user_skill' | 'check_skill_id' | 'exit_skill_creator'
-  }> => item.kind === 'image' || item.kind === 'remove' || item.kind === 'video' || item.kind === 'model')
+
+  const exports = prepared.filter((item): item is Extract<Prepared, { kind: 'zip' }> => item.kind === 'zip')
+  const measures = prepared.filter((item): item is Extract<Prepared, { kind: 'measure_duration' }> => item.kind === 'measure_duration')
+  const documentMetas = prepared.filter((item): item is Extract<Prepared, { kind: 'document_meta' }> => item.kind === 'document_meta')
+  const documentTexts = prepared.filter((item): item is Extract<Prepared, { kind: 'document_text' }> => item.kind === 'document_text')
+  const documentSearches = prepared.filter((item): item is Extract<Prepared, { kind: 'document_search' }> => item.kind === 'document_search')
+  const documentPageImages = prepared.filter((item): item is Extract<Prepared, { kind: 'document_page_image' }> => item.kind === 'document_page_image')
+  const documentImages = prepared.filter((item): item is Extract<Prepared, { kind: 'document_images' }> => item.kind === 'document_images')
+  const concats = prepared.filter((item): item is Extract<Prepared, { kind: 'concat' }> => item.kind === 'concat')
+  const extracts = prepared.filter((item): item is Extract<Prepared, { kind: 'extract_frame' }> => item.kind === 'extract_frame')
+  const asks = prepared.filter((item): item is Extract<Prepared, { kind: 'ask' }> => item.kind === 'ask')
+  const generation = prepared.filter((item): item is Exclude<Prepared, { kind: 'error' | 'concat' | 'extract_frame' | 'ask' | 'zip' | 'measure_duration' | 'document_meta' | 'document_text' | 'document_search' | 'document_page_image' | 'document_images' | 'load_skill' | 'save_user_skill' | 'check_skill_id' | 'exit_skill_creator' | 'set_skill_cover' }> => item.kind === 'image' || item.kind === 'remove' || item.kind === 'video' || item.kind === 'model')
+
   if (asks.length) {
     const blocked = [
       ...generation.map(item => item.call.id),
       ...concats.map(item => item.call.id),
+      ...extracts.map(item => item.call.id),
       ...exports.map(item => item.call.id),
+      ...measures.map(item => item.call.id),
     ]
     for (const id of blocked) {
       appendToolResult(sessionId, id, JSON.stringify({
         ok: false,
-        error: 'ask_user must run alone. Wait for the user, then continue.',
+        error: 'ask_user / request_voice_recording must run alone. Wait for the user, then continue.',
       }))
+    }
+    const voiceAsks = asks.filter(item => item.call.function.name === REQUEST_VOICE_RECORDING_TOOL)
+    if (voiceAsks.length && (asks.length > 1 || blocked.length || voiceAsks.length > 1)) {
+      for (const item of asks) {
+        appendToolResult(sessionId, item.call.id, JSON.stringify({
+          ok: false,
+          error: 'request_voice_recording must run alone. Wait for the recording, then continue.',
+        }))
+      }
+      return false
     }
     if (sessionWantsStop(session)) {
       for (const item of asks) {
@@ -1213,8 +1419,58 @@ async function dispatchToolCalls(sessionId: string, toolCalls: ToolCall[], emit:
     queueAskUser(sessionId, shownAsks.map(item => ({
       toolCallId: item.call.id,
       args: item.args,
+      tool: item.call.function.name,
     })), emit)
     return true
+  }
+
+  // set_skill_cover: free, works in skill Test mode without /skill-creator. Local storage only.
+  const coverSets = prepared.filter((item): item is Extract<Prepared, { kind: 'set_skill_cover' }> => item.kind === 'set_skill_cover')
+  for (const item of coverSets) {
+    emit({ type: 'tool', name: SET_SKILL_COVER_TOOL, status: 'start', callId: item.call.id })
+    try {
+      const projectId = String(session.projectId || '').trim()
+      let row = projectId ? await getUserSkillByProjectId(projectId) : null
+      if (!row && projectId) {
+        const project = await resolveProject(projectId)
+        const boundId = String((project as { skillId?: string } | null)?.skillId || '').trim()
+        if (boundId)
+          row = await getUserSkillRecord(boundId)
+      }
+      if (!row) {
+        appendToolResult(sessionId, item.call.id, JSON.stringify({
+          ok: false,
+          error: 'No skill is bound to this project. Open the skill project from Skills (Test) to set its cover.',
+        }))
+        continue
+      }
+      const resolved = await resolveSkillCoverUrl(item.url, session.images, {
+        isLocalMediaUrl: isStoredMediaUrl,
+        saveImage: file => uploadAgentImage(session.id, file),
+      }, signal)
+      if (!resolved.ok) {
+        appendToolResult(sessionId, item.call.id, JSON.stringify({ ok: false, error: resolved.error }))
+        continue
+      }
+      const saved = await setUserSkillCover(row.skillId, resolved.cover)
+      if (!saved) {
+        appendToolResult(sessionId, item.call.id, JSON.stringify({ ok: false, error: 'Skill not found' }))
+        continue
+      }
+      appendToolResult(sessionId, item.call.id, JSON.stringify({
+        ok: true,
+        id: saved.skillId,
+        cover: saved.cover || resolved.cover,
+        mirrored: resolved.mirrored,
+        notice: 'Skill cover updated. It shows on the Skills and Home cards.',
+      }))
+    }
+    catch (error) {
+      appendToolResult(sessionId, item.call.id, JSON.stringify({ ok: false, error: error instanceof Error ? error.message : 'Could not set the skill cover' }))
+    }
+    finally {
+      emit({ type: 'tool', name: SET_SKILL_COVER_TOOL, status: 'end', callId: item.call.id })
+    }
   }
 
   const skillExits = prepared.filter((item): item is Extract<Prepared, { kind: 'exit_skill_creator' }> => item.kind === 'exit_skill_creator')
@@ -1251,7 +1507,7 @@ async function dispatchToolCalls(sessionId: string, toolCalls: ToolCall[], emit:
         continue
       }
 
-      row = await publishAndEnableUserSkill(row.skillId) || row
+      row = await publishAndEnableUserSkill(row.skillId, item.category) || row
       projectId = String(row.projectId || projectId || '').trim()
       if (projectId) {
         try {
@@ -1284,6 +1540,7 @@ async function dispatchToolCalls(sessionId: string, toolCalls: ToolCall[], emit:
         skillId: row.skillId,
         enabled: true,
         status: 'published',
+        category: normalizeSkillCategory(row.category),
         notice: item.action === 'test_now'
           ? 'Skill enabled. Opening Test mode.'
           : 'Skill enabled. Returning to Skills.',
@@ -1342,18 +1599,29 @@ async function dispatchToolCalls(sessionId: string, toolCalls: ToolCall[], emit:
       appendToolResult(sessionId, item.call.id, JSON.stringify({ ok: false, error: `Unknown skill: ${item.id}` }))
       continue
     }
+    if (doc.source === 'builtin' && isHiddenBuiltinSkill(doc.id)) {
+      appendToolResult(sessionId, item.call.id, JSON.stringify({ ok: false, error: `Skill is not available: ${item.id}` }))
+      continue
+    }
     session.loadedSkillIds = [...new Set([...(session.loadedSkillIds || []), doc.id])]
     await refreshSessionPrompt(session)
-    appendToolResult(sessionId, item.call.id, JSON.stringify({
-      ok: true,
-      id: doc.id,
-      name: doc.frontmatter.name,
-      description: doc.frontmatter.description,
-      triggers: doc.frontmatter.triggers,
-      requires: doc.frontmatter.requires,
-      body: doc.body,
-      notice: 'Skill body loaded into the system prompt for this session. Follow it. Generation tools still require confirmation.',
-    }))
+    // The refreshed system prompt carries the body; only return it here if injection failed.
+    const systemContent = session.messages[0]?.role === 'system' ? session.messages[0].content : ''
+    appendToolResult(sessionId, item.call.id, JSON.stringify(promptHasLoadedSkill(systemContent, doc.id)
+      ? {
+          ok: true,
+          id: doc.id,
+          name: doc.frontmatter.name,
+          notice: `Skill /${doc.id} loaded. Its full body is now in the system prompt under On-demand skill bodies. Follow it. Generation tools still require confirmation.`,
+        }
+      : {
+          ok: true,
+          id: doc.id,
+          name: doc.frontmatter.name,
+          requires: doc.frontmatter.requires,
+          body: doc.body,
+          notice: 'Skill body returned here because it could not be added to the system prompt. Follow it. Generation tools still require confirmation.',
+        }))
   }
   for (const item of skillSaves) {
     emit({ type: 'tool', name: SAVE_USER_SKILL_TOOL, status: 'start', callId: item.call.id })
@@ -1369,6 +1637,7 @@ async function dispatchToolCalls(sessionId: string, toolCalls: ToolCall[], emit:
       const result = await persistUserSkill({
         markdown: item.markdown,
         enabled: item.enabled,
+        category: item.category,
         source: 'user',
         projectId: session.projectId,
       })
@@ -1390,6 +1659,7 @@ async function dispatchToolCalls(sessionId: string, toolCalls: ToolCall[], emit:
         created: result.created,
         id: result.skill.skillId,
         enabled: result.skill.enabled,
+        category: normalizeSkillCategory(result.skill.category),
         name: result.skill.name,
         notice: result.skill.enabled
           ? 'Skill saved and enabled. It appears in the / picker. Prefer /' + result.skill.skillId + ' to run it.'
@@ -1418,6 +1688,115 @@ async function dispatchToolCalls(sessionId: string, toolCalls: ToolCall[], emit:
       emit({ type: 'tool', name: EXPORT_ZIP_TOOL, status: 'end', callId: item.call.id })
     }
   }
+
+  for (const item of measures) {
+    if (sessionWantsStop(session) || signal?.aborted) {
+      appendToolResult(sessionId, item.call.id, JSON.stringify({ ok: false, cancelled: true, error: 'Stopped by user' }))
+      continue
+    }
+    emit({ type: 'tool', name: MEASURE_VIDEO_DURATION_TOOL, status: 'start', callId: item.call.id })
+    try {
+      const result = await runMeasureVideoDuration(item.items, signal)
+      appendToolResult(sessionId, item.call.id, JSON.stringify(result))
+    }
+    catch (error) {
+      appendToolResult(sessionId, item.call.id, JSON.stringify({ ok: false, error: error instanceof Error ? error.message : 'Could not measure video duration' }))
+    }
+    finally {
+      emit({ type: 'tool', name: MEASURE_VIDEO_DURATION_TOOL, status: 'end', callId: item.call.id })
+    }
+  }
+
+  for (const item of documentMetas) {
+    if (sessionWantsStop(session) || signal?.aborted) {
+      appendToolResult(sessionId, item.call.id, JSON.stringify({ ok: false, cancelled: true, error: 'Stopped by user' }))
+      continue
+    }
+    emit({ type: 'tool', name: DOCUMENT_META_TOOL, status: 'start', callId: item.call.id })
+    try {
+      const result = await runDocumentMetaTool(item.url, session.images, signal)
+      appendToolResult(sessionId, item.call.id, JSON.stringify(result))
+    }
+    catch (error) {
+      appendToolResult(sessionId, item.call.id, JSON.stringify({ ok: false, error: error instanceof Error ? error.message : 'document_meta failed' }))
+    }
+    finally {
+      emit({ type: 'tool', name: DOCUMENT_META_TOOL, status: 'end', callId: item.call.id })
+    }
+  }
+
+  for (const item of documentTexts) {
+    if (sessionWantsStop(session) || signal?.aborted) {
+      appendToolResult(sessionId, item.call.id, JSON.stringify({ ok: false, cancelled: true, error: 'Stopped by user' }))
+      continue
+    }
+    emit({ type: 'tool', name: DOCUMENT_TEXT_TOOL, status: 'start', callId: item.call.id })
+    try {
+      const result = await runDocumentTextTool(item.args, session.images, signal)
+      appendToolResult(sessionId, item.call.id, JSON.stringify(result))
+    }
+    catch (error) {
+      appendToolResult(sessionId, item.call.id, JSON.stringify({ ok: false, error: error instanceof Error ? error.message : 'document_text failed' }))
+    }
+    finally {
+      emit({ type: 'tool', name: DOCUMENT_TEXT_TOOL, status: 'end', callId: item.call.id })
+    }
+  }
+
+  for (const item of documentSearches) {
+    if (sessionWantsStop(session) || signal?.aborted) {
+      appendToolResult(sessionId, item.call.id, JSON.stringify({ ok: false, cancelled: true, error: 'Stopped by user' }))
+      continue
+    }
+    emit({ type: 'tool', name: DOCUMENT_SEARCH_TOOL, status: 'start', callId: item.call.id })
+    try {
+      const result = await runDocumentSearchTool(item.args, session.images, signal)
+      appendToolResult(sessionId, item.call.id, JSON.stringify(result))
+    }
+    catch (error) {
+      appendToolResult(sessionId, item.call.id, JSON.stringify({ ok: false, error: error instanceof Error ? error.message : 'document_search failed' }))
+    }
+    finally {
+      emit({ type: 'tool', name: DOCUMENT_SEARCH_TOOL, status: 'end', callId: item.call.id })
+    }
+  }
+
+  for (const item of documentPageImages) {
+    if (sessionWantsStop(session) || signal?.aborted) {
+      appendToolResult(sessionId, item.call.id, JSON.stringify({ ok: false, cancelled: true, error: 'Stopped by user' }))
+      continue
+    }
+    emit({ type: 'tool', name: DOCUMENT_PAGE_IMAGE_TOOL, status: 'start', callId: item.call.id })
+    try {
+      const result = await runDocumentPageImageTool(item.args, session.images, sessionId, signal)
+      appendToolResult(sessionId, item.call.id, JSON.stringify(result))
+    }
+    catch (error) {
+      appendToolResult(sessionId, item.call.id, JSON.stringify({ ok: false, error: error instanceof Error ? error.message : 'document_page_image failed' }))
+    }
+    finally {
+      emit({ type: 'tool', name: DOCUMENT_PAGE_IMAGE_TOOL, status: 'end', callId: item.call.id })
+    }
+  }
+
+  for (const item of documentImages) {
+    if (sessionWantsStop(session) || signal?.aborted) {
+      appendToolResult(sessionId, item.call.id, JSON.stringify({ ok: false, cancelled: true, error: 'Stopped by user' }))
+      continue
+    }
+    emit({ type: 'tool', name: DOCUMENT_IMAGES_TOOL, status: 'start', callId: item.call.id })
+    try {
+      const result = await runDocumentImagesTool(item.args, session.images, sessionId, signal)
+      appendToolResult(sessionId, item.call.id, JSON.stringify(result))
+    }
+    catch (error) {
+      appendToolResult(sessionId, item.call.id, JSON.stringify({ ok: false, error: error instanceof Error ? error.message : 'document_images failed' }))
+    }
+    finally {
+      emit({ type: 'tool', name: DOCUMENT_IMAGES_TOOL, status: 'end', callId: item.call.id })
+    }
+  }
+
   if (concats.length && generation.length) {
     for (const item of concats) {
       appendToolResult(sessionId, item.call.id, JSON.stringify({
@@ -1426,17 +1805,27 @@ async function dispatchToolCalls(sessionId: string, toolCalls: ToolCall[], emit:
       }))
     }
   }
+  if (extracts.length && generation.length) {
+    for (const item of extracts) {
+      appendToolResult(sessionId, item.call.id, JSON.stringify({
+        ok: false,
+        error: 'extract_video_frame cannot run in the same turn as generation. Finish the clips first, then extract the frame.',
+      }))
+    }
+  }
   if (generation.some(item => item.kind === 'model') && generation.some(item => item.kind !== 'model')) {
     for (const item of generation)
       appendToolResult(sessionId, item.call.id, JSON.stringify({ ok: false, error: 'Use registered model tools for all jobs in this batch.' }))
     return false
   }
-  if (!generation.length && !(concats.length && !generation.length))
+
+  if (!generation.length && !(concats.length && !generation.length) && !(extracts.length && !generation.length))
     return false
   if (sessionWantsStop(session)) {
     const skip = [
       ...generation.map(item => item.call.id),
       ...((concats.length && !generation.length) ? concats.map(item => item.call.id) : []),
+      ...((extracts.length && !generation.length) ? extracts.map(item => item.call.id) : []),
     ]
     for (const id of skip) {
       appendToolResult(sessionId, id, JSON.stringify({
@@ -1447,6 +1836,17 @@ async function dispatchToolCalls(sessionId: string, toolCalls: ToolCall[], emit:
     }
     return false
   }
+  if (extracts.length && !generation.length) {
+    await runExtractVideoFrames(sessionId, extracts.map(item => ({
+      toolCallId: item.call.id,
+      videoUrl: item.videoUrl,
+      which: item.which,
+      seconds: item.seconds,
+    })), emit, signal)
+    if (!concats.length)
+      return false
+  }
+
   if (concats.length && !generation.length) {
     await runConcats(sessionId, concats.map(item => ({
       toolCallId: item.call.id,
@@ -1556,6 +1956,7 @@ export async function runAgentLoop(sessionId: string, emit: Emit, signal?: Abort
           noteAgentStopped(session, emit)
           return
         }
+        console.error('[agent llm step]', session.id, error instanceof Error ? error.message.slice(0, 500) : error)
         throw error
       }
       if (sessionWantsStop(session)) {
@@ -1688,19 +2089,37 @@ function isLikelyVideoUrl(url: string, images: AgentImage[]) {
   return isMediaVideoUrl(url) || /\.(?:mp4|mov|webm|m4v|mkv)(\?|$)/i.test(url)
 }
 
+
+function isLikelyDocumentUrl(url: string, images: AgentImage[]) {
+  const hit = images.find(item => item.url === url)
+  if (hit?.kind === 'document')
+    return true
+  return /\.(?:pdf|docx?|pptx?|xlsx?|csv)(?:\?|$)/i.test(url)
+}
+
 function userMessageContent(text: string, attachments: string[], images: AgentImage[] = []): string | UserContentPart[] {
   if (!attachments.length)
     return text
   const audios = attachments.filter(url => isLikelyAudioUrl(url, images))
   const videos = attachments.filter(url => !isLikelyAudioUrl(url, images) && isLikelyVideoUrl(url, images))
-  const stills = attachments.filter(url => !isLikelyAudioUrl(url, images) && !isLikelyVideoUrl(url, images))
+  const documents = attachments.filter(url => isLikelyDocumentUrl(url, images))
+  const stills = attachments.filter(url => !isLikelyAudioUrl(url, images) && !isLikelyVideoUrl(url, images) && !isLikelyDocumentUrl(url, images))
   const body = text
     || (videos.length && !stills.length && !audios.length
       ? 'Use the attached video reference(s).'
       : audios.length && !stills.length && !videos.length
         ? 'Use the attached voice reference(s).'
-        : 'Use the attached media.')
+        : documents.length && !stills.length && !videos.length && !audios.length
+          ? 'The user attached document(s) with no task. Acknowledge the file name(s) and ask what they need. Do not call any document_* tool this turn.'
+          : 'Use the attached media.')
   const parts: string[] = [body]
+  if (documents.length) {
+    parts.push(`Attached documents:\n${documents.map((url, index) => {
+      const hit = images.find(item => item.url === url)
+      const label = hit?.name || url
+      return `${index + 1}. ${label} — ${url}`
+    }).join('\n')}\nThese URLs are available via document_meta, document_text (ranged: pageFrom/pageTo for PDF, chunkFrom/chunkTo for Word, slideFrom/slideTo for PPT), document_search, document_page_image (PDF page or PPTX slide preview), or document_images (DOCX/PPTX embeds). Ask-first: if this turn has no concrete document task (attach-only or vague look-over), acknowledge the file name(s) and ask what they need — call zero document_* tools. Only after a concrete ask, use the tools. Never dump the entire file into chat.`)
+  }
   if (stills.length) {
     parts.push(`Attached stills:\n${stills.map((url, index) => `${index + 1}. ${url}`).join('\n')}\nUse these URLs as generate_image input_urls, generate_video first_frame (one still), or generate_video reference_images (several stills).`)
   }
@@ -1755,7 +2174,10 @@ export async function handleStop(sessionId: string) {
 }
 export async function handleChat(message: string, sessionId: string | undefined, attachments: unknown, emit: Emit, signal?: AbortSignal, quality?: unknown, confirmPolicy?: unknown, options?: LoopRequestOptions) {
   const urls = parseAttachmentUrls(attachments)
-  const text = message.trim()
+  const rawText = message.trim()
+  const isAutoRetry = rawText.includes(INTERNAL_AUTO_RETRY_MARKER)
+  const autoRetryIds = isAutoRetry ? parseAutoRetryIds(rawText) : []
+  const text = isAutoRetry ? stripAutoRetryIds(rawText) : rawText
   if (!text && !urls.length)
     throw new Error('Message is required')
   const session = await resolveChatSession(sessionId, options?.projectId, options?.bffUrl)
@@ -1770,18 +2192,9 @@ export async function handleChat(message: string, sessionId: string | undefined,
   if (options?.bffUrl)
     session.bffUrl = options.bffUrl
   await restoreSessionContext(session, options?.history, options?.images, text)
-  const slashSkills = parseSkillSlashIds(text)
-  const historySlash = session.messages.flatMap((message) => {
-    if (message.role !== 'user')
-      return [] as string[]
-    const content = typeof message.content === 'string'
-      ? message.content
-      : Array.isArray(message.content)
-        ? message.content.map(part => part.type === 'text' ? part.text : '').join('\n')
-        : ''
-    return parseSkillSlashIds(content)
-  })
-  const mergedSkills = [...new Set([...(session.loadedSkillIds || []), ...historySlash, ...slashSkills])]
+  // Only the latest user message is parsed for /slug (history is not re-scanned each turn).
+  const slashSkills = parseSkillSlashIds(text).filter(id => !isHiddenBuiltinSkill(id))
+  const mergedSkills = [...new Set([...(session.loadedSkillIds || []), ...slashSkills])].filter(id => !isHiddenBuiltinSkill(id))
   if (mergedSkills.length)
     session.loadedSkillIds = mergedSkills
   await refreshSessionPrompt(session)
@@ -1798,6 +2211,22 @@ export async function handleChat(message: string, sessionId: string | undefined,
     emit({ type: 'choice', choice: session.pendingChoice.payload })
     throw new Error('Answer or skip the pending questions first')
   }
+
+  if (isAutoRetry) {
+    // Hidden auto-retry turns start new generations. Only honor them for fresh failures that
+    // were not already retried (a reloaded page must not re-retry old/refunded fails).
+    const eligible = eligibleAutoRetryFails(session.images, { ids: autoRetryIds, text, now: Date.now() })
+    if (!eligible.length) {
+      console.warn('[agent auto retry ignored]', session.id, autoRetryIds.join(',') || '(legacy prompt match)')
+      emit({ type: 'status', status: session.images.some(item => item.status === 'generating') ? 'generating' : 'idle' })
+      emit({ type: 'done' })
+      return
+    }
+    for (const image of eligible)
+      image.autoRetryHandled = true
+    touch(session)
+  }
+
   session.busy = true
   session.messages.push({ role: 'user', content: userMessageContent(text, urls, session.images) })
   touch(session)
@@ -2013,6 +2442,13 @@ function formatChoiceResult(payload: NonNullable<AgentSession['pendingChoice']>[
           ? { imageSelections: validateLayerSelections(row.imageSelections, sourceUrls) }
           : validateLayerSelection(row.imageUrl, row.regions, sourceUrls)
         : undefined
+      const voiceUrl = typeof row.voiceUrl === 'string' ? row.voiceUrl.trim() : ''
+      const voiceName = typeof row.voiceName === 'string' ? row.voiceName.trim().slice(0, 100) : ''
+      if (question.id === 'voice_record' && option.id === 'recorded') {
+        // Local uploads are served over http(s) from this app's /media/ route.
+        if (!/^https?:\/\//i.test(voiceUrl))
+          throw new Error('Record your voice sample before continuing.')
+      }
       return {
         questionId: question.id,
         optionId: option.id,
@@ -2022,6 +2458,9 @@ function formatChoiceResult(payload: NonNullable<AgentSession['pendingChoice']>[
         ...(question.id === 'sketch_references' && option.id === 'yes' ? { referenceImages: validateSketchReferences(row.referenceImages) } : {}),
         ...(question.id === 'image_edit_method' && option.id === 'annotate' ? { annotationEdit: validateImageAnnotationEdit(row.annotationEdit, sourceUrls) } : {}),
         ...(question.id === 'object_removal_method' && option.id === 'annotate' ? { objectRemovalEdit: validateObjectRemovalEdit(row.objectRemovalEdit, sourceUrls) } : {}),
+        ...(question.id === 'voice_record' && option.id === 'recorded'
+          ? { voiceUrl, ...(voiceName ? { voiceName } : {}) }
+          : {}),
       }
     }
     if (text) {
@@ -2097,8 +2536,83 @@ export async function handleChoice(sessionId: string, body: ChoiceBody, emit: Em
       session.quality = preference
       await refreshSessionPrompt(session)
     }
-    for (const item of pending.items)
+    const choiceParsed = JSON.parse(result) as { answers?: ChoiceAnswer[] }
+    let voiceAnswer = choiceParsed.answers?.find(answer => answer.questionId === 'voice_record' && answer.voiceUrl)
+    let voiceConvertError = ''
+    if (voiceAnswer?.voiceUrl) {
+      try {
+        const ensured = await ensureReferenceAudioMp3Url({
+          url: voiceAnswer.voiceUrl,
+          sessionId: session.id,
+          name: voiceAnswer.voiceName || 'voice-sample.mp3',
+          signal,
+        })
+        voiceAnswer = {
+          ...voiceAnswer,
+          voiceUrl: ensured.url,
+          ...(ensured.name ? { voiceName: ensured.name } : {}),
+        }
+        if (choiceParsed.answers) {
+          choiceParsed.answers = choiceParsed.answers.map(answer =>
+            answer.questionId === 'voice_record' ? { ...answer, ...voiceAnswer } : answer,
+          )
+          result = JSON.stringify(choiceParsed)
+        }
+      }
+      catch (error) {
+        voiceConvertError = error instanceof Error
+          ? error.message
+          : 'Could not convert the recording to MP3. Ask the user to record again or upload an MP3/WAV file.'
+        voiceAnswer = undefined
+      }
+    }
+    if (voiceAnswer?.voiceUrl && !session.images.some(image => image.url === voiceAnswer!.voiceUrl)) {
+      upsertImage(session, {
+        id: crypto.randomUUID(),
+        kind: 'audio',
+        status: 'success',
+        name: voiceAnswer.voiceName || 'Voice sample',
+        prompt: voiceAnswer.voiceName || 'Recorded voice sample',
+        aspectRatio: 'auto',
+        resolution: '',
+        url: voiceAnswer.voiceUrl,
+        error: '',
+      })
+    }
+    for (const item of pending.items) {
+      if (item.tool === REQUEST_VOICE_RECORDING_TOOL) {
+        const script = pending.payload.questions.find(question => question.id === 'voice_record')?.script || ''
+        if (body.action === 'skip' || choiceParsed.answers?.every(answer => answer.skipped)) {
+          appendToolResult(session.id, item.toolCallId, JSON.stringify({
+            ok: false,
+            skipped: true,
+            error: 'Voice recording was skipped. Ask the user again or offer upload / random voice.',
+          }))
+          continue
+        }
+        if (voiceConvertError) {
+          appendToolResult(session.id, item.toolCallId, JSON.stringify({ ok: false, error: voiceConvertError }))
+          continue
+        }
+        if (!voiceAnswer?.voiceUrl) {
+          appendToolResult(session.id, item.toolCallId, JSON.stringify({
+            ok: false,
+            error: 'No voice recording URL was returned. Ask the user to record again or upload audio.',
+          }))
+          continue
+        }
+        appendToolResult(session.id, item.toolCallId, JSON.stringify({
+          ok: true,
+          voiceUrl: voiceAnswer.voiceUrl,
+          format: 'audio/mpeg',
+          ...(voiceAnswer.voiceName ? { voiceName: voiceAnswer.voiceName } : {}),
+          ...(script ? { script } : {}),
+          notice: 'Locked MP3 voice reference (stored locally). Use this exact URL as reference_audios. Do not invent a different URL and do not ask the user to re-upload for format reasons.',
+        }))
+        continue
+      }
       appendToolResult(session.id, item.toolCallId, result)
+    }
     const sketch = sketchBrief(session.messages)
     if (sketch?.referencesDone && !sketch.cancelled) {
       session.messages.push({
@@ -2249,20 +2763,23 @@ export async function handleUpload(sessionId: string | undefined, file: {
   const session = await resolveChatSession(sessionId)
   const mediaKind = agentMediaKindForMime(file.mime)
   if (!mediaKind)
-    throw new Error('Unsupported upload type. Use JPEG/PNG/WEBP/GIF images, MP4/MOV/WEBM video, or MP3/WAV/AAC/OGG/M4A audio.')
+    throw new Error('Unsupported upload type. Use JPEG/PNG/WEBP/GIF images, MP4/MOV/WEBM video, MP3/WAV/AAC/OGG/M4A/WEBM audio, or PDF/DOCX/PPTX/XLSX/CSV documents.')
   const uploaded = await uploadAgentMedia(session.id, file)
   const isAudio = uploaded.kind === 'audio'
   const isVideo = uploaded.kind === 'video'
+  const isDocument = uploaded.kind === 'document'
   const image = {
     id: crypto.randomUUID(),
-    kind: (isAudio ? 'audio' : isVideo ? 'video' : 'upload') as const,
+    kind: (isDocument ? 'document' : isAudio ? 'audio' : isVideo ? 'video' : 'upload') as const,
     status: 'success' as const,
     name: file.fileName.slice(0, 100),
-    prompt: isAudio
-      ? (file.fileName.slice(0, 100) || 'Uploaded voice reference')
-      : isVideo
-        ? (file.fileName.slice(0, 100) || 'Uploaded video reference')
-        : (file.fileName.slice(0, 100) || 'Uploaded still'),
+    prompt: isDocument
+      ? (file.fileName.slice(0, 100) || 'Uploaded document')
+      : isAudio
+        ? (file.fileName.slice(0, 100) || 'Uploaded voice reference')
+        : isVideo
+          ? (file.fileName.slice(0, 100) || 'Uploaded video reference')
+          : (file.fileName.slice(0, 100) || 'Uploaded still'),
     aspectRatio: 'auto',
     resolution: '',
     url: uploaded.url,

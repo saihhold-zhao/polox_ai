@@ -53,3 +53,25 @@ export function isMediaAudioUrl(url: string) {
 export function isMediaImageUrl(url: string) {
   return /\.(?:jpe?g|png|webp|gif|bmp|tiff?)(?:\?|$)/i.test(url)
 }
+
+export function isMediaDocumentUrl(url: string) {
+  return /\.(?:pdf|docx?|pptx?|xlsx?|csv)(?:\?|$)/i.test(url)
+}
+
+export function mediaDocumentLabel(nameOrUrl: string, style: 'short' | 'badge' = 'short') {
+  const value = String(nameOrUrl || '')
+  const short = /\.pdf(?:\?|$)/i.test(value)
+    ? 'PDF'
+    : /\.pptx?(?:\?|$)/i.test(value)
+      ? 'Presentation'
+      : /\.xlsx?(?:\?|$)/i.test(value)
+        ? 'Spreadsheet'
+        : /\.csv(?:\?|$)/i.test(value)
+          ? 'CSV'
+          : /\.docx?(?:\?|$)/i.test(value)
+            ? 'Document'
+            : 'Document'
+  if (style === 'badge')
+    return short === 'PDF' ? 'PDF' : short === 'Presentation' ? 'PPTX' : short === 'Spreadsheet' ? 'XLSX' : short === 'CSV' ? 'CSV' : 'DOCUMENT'
+  return short
+}

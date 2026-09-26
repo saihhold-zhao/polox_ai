@@ -65,6 +65,11 @@ const MIME: Record<string, string> = {
   '.m4a': 'audio/mp4',
   '.flac': 'audio/flac',
   '.zip': 'application/zip',
+  '.pdf': 'application/pdf',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.csv': 'text/csv',
 }
 
 export async function storedMediaFile(key: string) {

@@ -29,6 +29,7 @@ export function connectDatabase() {
   try {
     migrateLocalData(database)
     migrateGenerationMetadata(database)
+    migrateSkillCategory(database)
   }
   catch (error) {
     database.close()
@@ -114,6 +115,26 @@ function migrateGenerationMetadata(db: DatabaseSync) {
       }
     }
     db.exec('PRAGMA user_version = 2; COMMIT')
+  }
+  catch (error) {
+    db.exec('ROLLBACK')
+    throw error
+  }
+}
+
+// v3: skills gain a utility | fun category. Backfill legacy rows (missing/unknown) as utility.
+// Readers still treat a missing category as utility, so this only makes stored data explicit.
+function migrateSkillCategory(db: DatabaseSync) {
+  if (Number(db.prepare('PRAGMA user_version').get()?.user_version) >= 3)
+    return
+  db.exec('BEGIN IMMEDIATE')
+  try {
+    const names = new Set(db.prepare('SELECT name FROM sqlite_master WHERE type = \'table\'').all().map(row => row.name))
+    if (names.has('user_skills')) {
+      db.exec(`UPDATE "user_skills" SET body = json_set(body, '$.category', 'utility')
+        WHERE json_extract(body, '$.category') IS NULL OR json_extract(body, '$.category') NOT IN ('utility', 'fun')`)
+    }
+    db.exec('PRAGMA user_version = 3; COMMIT')
   }
   catch (error) {
     db.exec('ROLLBACK')

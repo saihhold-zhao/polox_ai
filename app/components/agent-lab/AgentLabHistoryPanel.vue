@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { AgentHistoryImage, AgentHistoryPage } from '~~/shared/types/agentHistory'
 import type { AgentImage, ChoiceAnswer, ChoicePayload, ConfirmationPayload } from '~/composables/useAgentLab'
+import { isAutoRetryUserInstruction, isInternalAgentChatText } from '~~/shared/utils/agentChatVisibility'
 import { messageMedia } from '~/utils/agentMessageMedia'
 import { presentAgentResults } from '~/utils/agentResultPresentation'
 
@@ -22,7 +23,7 @@ let previousTop = 0
 const visitedCursors = new Set<string>()
 let retryDirection: 'initial' | 'older' = 'initial'
 
-const savedMessages = computed(() => (page.value?.messages || []).filter(message => !props.excludeIds?.some(id => id.replace(/^ui:/, '') === message.id.replace(/^ui:/, ''))).map((message) => {
+const savedMessages = computed(() => (page.value?.messages || []).filter(message => !props.excludeIds?.some(id => id.replace(/^ui:/, '') === message.id.replace(/^ui:/, ''))).filter(message => !(message.role === 'user' && (isAutoRetryUserInstruction(message.content) || isInternalAgentChatText(message.content)))).map((message) => {
   const card = message.confirmation
   const params = card?.params as ConfirmationPayload['params'] | undefined
   // Relaxed: require confirmation id + params object (prompt optional) so older cards still render.
@@ -64,7 +65,7 @@ function thumbsFor(message: { content: string, imageIds?: string[], media?: Agen
     return message.media
   return messageMedia<AgentHistoryImage>(message, page.value?.images || []).map(image => ({
     ...image,
-    kind: ['still', 'cutout', 'video', 'upload'].includes(image.kind) ? image.kind : 'still',
+    kind: ['still', 'cutout', 'video', 'upload', 'audio', 'document'].includes(image.kind) ? image.kind : 'still',
   } as AgentImage))
 }
 

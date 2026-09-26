@@ -45,7 +45,10 @@ const { systemPrompt } = load(resolve(root, 'server/agent/prompt.ts'))
 test('assembled system prompt keeps core full skills and specialty catalog only', () => {
   const prompt = systemPrompt('always')
   assert.match(prompt, /# Prompt rewrite/)
-  assert.match(prompt, /# Long-form video/)
+  // long-form-video is on demand now: catalog line + load rule, body only after load_skill.
+  assert.doesNotMatch(prompt, /# Narrative storyboard video|# Long-form video/)
+  assert.match(prompt, /- \/long-form-video — /)
+  assert.match(prompt, /load_skill\(\{ id: "long-form-video" \}\) first/)
   assert.match(prompt, /image-layer-splitter/)
   assert.match(prompt, /skill-creator/)
   const beforeCatalog = prompt.split(/### Skill catalog/)[0]

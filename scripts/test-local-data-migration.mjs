@@ -40,7 +40,7 @@ test('existing data becomes one local installation without losing projects or co
     }
     closeDatabase()
     assert.equal(await Projects.countDocuments({}), 2)
-    assert.equal(Number(connectDatabase().prepare('PRAGMA user_version').get().user_version), 2)
+    assert.equal(Number(connectDatabase().prepare('PRAGMA user_version').get().user_version), 3)
     assert.deepEqual(stripLegacyScope({ ownerWorkspaceId: 'old', userId: 'old', messages: [{ role: 'user', content: 'hello' }] }), { messages: [{ role: 'user', content: 'hello' }] })
   }
   finally {
@@ -52,4 +52,28 @@ test('existing data becomes one local installation without losing projects or co
 test('obsolete accounting metadata is removed without changing prompts or generation settings', () => {
   const record = { creditsCharged: 12, input: { prompt: 'a credit card on a desk', duration: 10 }, runtime: { pendingConfirmation: { credits: 4, params: { resolution: '720p' } } }, messages: [{ confirmationCredits: 4, content: 'Keep this message' }] }
   assert.deepEqual(stripLegacyAccounting(record), { input: { prompt: 'a credit card on a desk', duration: 10 }, runtime: { pendingConfirmation: { params: { resolution: '720p' } } }, messages: [{ content: 'Keep this message' }] })
+})
+
+test('legacy user skills without a category are backfilled as utility; fun is kept', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'polox-skill-category-'))
+  const path = join(dir, 'old.sqlite')
+  configureDatabase(path)
+  const old = new DatabaseSync(path)
+  old.exec('CREATE TABLE user_skills (id TEXT PRIMARY KEY, body TEXT NOT NULL)')
+  old.prepare('INSERT INTO user_skills VALUES (?, ?)').run('a', JSON.stringify({ _id: 'a', skillId: 'legacy-skill' }))
+  old.prepare('INSERT INTO user_skills VALUES (?, ?)').run('b', JSON.stringify({ _id: 'b', skillId: 'fun-skill', category: 'fun' }))
+  old.prepare('INSERT INTO user_skills VALUES (?, ?)').run('c', JSON.stringify({ _id: 'c', skillId: 'odd-skill', category: 'weird' }))
+  old.exec('PRAGMA user_version = 2')
+  old.close()
+  try {
+    const Skills = defineCollection('user_skills', () => ({}))
+    assert.equal((await Skills.findOne({ skillId: 'legacy-skill' })).category, 'utility')
+    assert.equal((await Skills.findOne({ skillId: 'fun-skill' })).category, 'fun')
+    assert.equal((await Skills.findOne({ skillId: 'odd-skill' })).category, 'utility')
+    assert.equal(Number(connectDatabase().prepare('PRAGMA user_version').get().user_version), 3)
+  }
+  finally {
+    closeDatabase()
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

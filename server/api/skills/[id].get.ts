@@ -22,6 +22,7 @@ export default defineEventHandler(async (event) => {
       version: doc.frontmatter.version,
       triggers: doc.frontmatter.triggers,
       requires: doc.frontmatter.requires,
+      category: doc.frontmatter.category || catalog?.category || 'utility',
       markdown: doc.raw,
       catalog,
     }

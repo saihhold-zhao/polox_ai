@@ -19,6 +19,13 @@ const props = withDefaults(defineProps<{
   embedded: false,
   newAgentOnSend: false,
 })
+
+const emit = defineEmits<{
+  /** Initial project resolve finished; deep-link handoffs may settle after this. */
+  ready: []
+  /** User is sending from the homepage composer — pending deep-link handoffs must stop re-inserting. */
+  sendStart: []
+}>()
 const { projects, selectedProjectId, createProject } = useProjects()
 const { enterSelectedProject, resolveTargetProjectId } = useAgentWorkspaceNav()
 const { createDraftAndOpenEditor, priming: primingSkillCreator } = useSkillCreatorLaunch()
@@ -143,8 +150,27 @@ async function mentionSkill(skillId: string) {
 
 defineExpose({
   mentionSkill,
-  mentionModel: (modelId: string) => chat.value?.mentionModel(modelId),
-  mentionTask: (task: string) => chat.value?.mentionTask(task),
+  mentionModel: async (modelId: string) => {
+    // Abort as soon as AgentLabChat exposes mentionModel (~400ms max).
+    for (let attempt = 0; attempt < 24; attempt++) {
+      if (chat.value?.mentionModel) {
+        await chat.value.mentionModel(modelId)
+        return
+      }
+      await nextTick()
+      await new Promise(resolve => setTimeout(resolve, 16))
+    }
+  },
+  mentionTask: async (task: string) => {
+    for (let attempt = 0; attempt < 24; attempt++) {
+      if (chat.value?.mentionTask) {
+        await chat.value.mentionTask(task)
+        return
+      }
+      await nextTick()
+      await new Promise(resolve => setTimeout(resolve, 16))
+    }
+  },
   openSketchInProject,
 })
 const projectReady = computed(() => Boolean(selectedProjectId.value))
@@ -163,8 +189,17 @@ async function submitCreateProject() {
     creatingProject.value = false
   }
 }
-onMounted(() => {
-  void resolveTargetProjectId()
+onMounted(async () => {
+  try {
+    await resolveTargetProjectId()
+  }
+  catch (error) {
+    // Still report ready so homepage deep-link handoffs can settle (projects load later).
+    console.error('[home-composer] resolve project', error)
+  }
+  finally {
+    emit('ready')
+  }
 })
 async function onSend() {
   if (hasSketch.value) {
@@ -186,11 +221,15 @@ async function onSend() {
       draft.value = ''
     return Boolean(opened)
   }
+  emit('sendStart')
   await resolveTargetProjectId()
   await nextTick()
   const sent = await sendMessage({ newAgent: props.newAgentOnSend })
-  if (sent)
+  if (sent) {
+    // Persist the new agent before route change so the project page hydrates it.
+    flush()
     await enterSelectedProject()
+  }
   return sent
 }
 async function onConfirm(params: ConfirmationPayload['params']) {

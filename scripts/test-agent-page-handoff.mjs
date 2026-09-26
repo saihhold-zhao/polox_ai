@@ -60,6 +60,7 @@ test('mounting the project page preserves a live turn and resumes remote sync on
   const calls = []
   const context = compile(['syncRemoteAgents'], {
     activeTurns: 1,
+    commitCurrentAgent: () => calls.push('commit'),
     hydrateRemoteChats: async () => calls.push('chats'),
     hydrateRemoteSessions: async () => calls.push('sessions'),
     hydrateServer: async () => calls.push('server'),
@@ -69,7 +70,7 @@ test('mounting the project page preserves a live turn and resumes remote sync on
   assert.deepEqual(calls, [], 'An archive read must not overwrite the streaming session')
   context.activeTurns = 0
   await context.syncRemoteAgents()
-  assert.deepEqual(calls, ['chats', 'sessions', 'server', 'store'])
+  assert.deepEqual(calls, ['commit', 'chats', 'sessions', 'server', 'store'])
 })
 
 test('new-agent send starts without the previous session and carries only submitted attachments', async () => {

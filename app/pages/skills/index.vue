@@ -3,6 +3,9 @@ import { useSkillCreatorLaunch } from '~/composables/useSkillCreatorLaunch'
 import { FolderOpen, FolderKanban, Pencil, Plus, Trash2 } from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
 import { readErrorMessage } from '~~/shared/utils/apiError'
+import type { SkillCategory, SkillCategoryTab } from '~~/shared/utils/skillCategory'
+import { countSkillsByCategory, filterSkillsByCategory, normalizeSkillCategory, SKILL_CATEGORIES, SKILL_CATEGORY_LABELS } from '~~/shared/utils/skillCategory'
+import SkillCategoryTabs from '~/components/skills/SkillCategoryTabs.vue'
 
 interface UserSkillRow {
   id: string
@@ -10,6 +13,7 @@ interface UserSkillRow {
   description: string
   keywords?: string
   enabled: boolean
+  category?: SkillCategory
   version?: string
   source?: string
   updatedAt?: string | Date
@@ -36,6 +40,9 @@ const editingId = ref('')
 const deleteOpen = ref(false)
 const deleting = ref(false)
 const deletingSkill = ref<UserSkillRow | null>(null)
+const activeCategory = ref<SkillCategoryTab>('all')
+const categoryCounts = computed(() => countSkillsByCategory(skills.value))
+const visibleSkills = computed(() => filterSkillsByCategory(skills.value, activeCategory.value))
 
 async function loadSkills() {
   if (loading.value)
@@ -44,7 +51,7 @@ async function loadSkills() {
   loadError.value = ''
   try {
     const data = await $fetch<{ userSkills?: UserSkillRow[] }>('/api/skills')
-    skills.value = [...(data.userSkills || [])].sort((a, b) => {
+    skills.value = [...(data.userSkills || [])].map(row => ({ ...row, category: normalizeSkillCategory(row.category) })).sort((a, b) => {
       const at = a.updatedAt ? new Date(a.updatedAt).getTime() : 0
       const bt = b.updatedAt ? new Date(b.updatedAt).getTime() : 0
       return bt - at
@@ -109,6 +116,30 @@ async function confirmDelete() {
   }
 }
 
+async function changeCategory(skill: UserSkillRow, value: unknown) {
+  const next = normalizeSkillCategory(value)
+  if (busyId.value || next === normalizeSkillCategory(skill.category))
+    return
+  busyId.value = skill.id
+  const previous = skill.category
+  skill.category = next
+  try {
+    const data = await $fetch<{ skill?: UserSkillRow }>(`/api/skills/${encodeURIComponent(skill.id)}`, {
+      method: 'PATCH',
+      body: { category: next },
+    })
+    skill.category = normalizeSkillCategory(data.skill?.category ?? next)
+    toast.success(`Moved to ${SKILL_CATEGORY_LABELS[skill.category]}`)
+  }
+  catch (error) {
+    skill.category = previous
+    toast.error(readErrorMessage(error, 'Could not update category'))
+  }
+  finally {
+    busyId.value = ''
+  }
+}
+
 async function editSkill(skill: UserSkillRow) {
   if (editingId.value)
     return
@@ -130,13 +161,14 @@ async function editSkill(skill: UserSkillRow) {
       `Current skill id: ${skillId}`,
       `Current skill name: ${skillName}`,
       `Status: ${exported.skill?.status || (skill.enabled ? 'published' : 'draft')}.`,
+      `Current skill category: ${normalizeSkillCategory(skill.category)}`,
       '',
       'Current skill markdown:',
       '```markdown',
       markdown,
       '```',
       '',
-      'Prefer keeping the same id unless the user asks to rename it. After clarifying changes, ask_user for display name / trigger if needed, then save with save_user_skill. WIP may use status:"draft"; final exit ask_user is save_and_exit or test_now. Do not dump the full SKILL.md into chat unless they ask.',
+      'Prefer keeping the same id unless the user asks to rename it. After clarifying changes, ask_user for display name / trigger if needed, then save with save_user_skill. Right before the final exit, re-judge Utility vs Fun from the skill purpose, then ask_user skill_category with your judgment first + recommended + one-line reason, and pass the option the user picked as category on the final save_user_skill + exit_skill_creator. WIP may use status:"draft"; final exit ask_user is save_and_exit or test_now. Do not dump the full SKILL.md into chat unless they ask.',
       '<<<END_INTERNAL_EDIT_CONTEXT>>>',
     ].join('\n')
 
@@ -268,12 +300,32 @@ function goCreate() {
       </Button>
     </div>
 
+    <template v-else>
+    <SkillCategoryTabs
+      v-model="activeCategory"
+      id-prefix="my-skills-category-tab"
+      aria-label="Skill category"
+      controls="my-skills-list"
+      test-id="my-skills-category-tabs"
+      :counts="categoryCounts"
+      class="mb-3"
+    />
+    <p
+      v-if="!visibleSkills.length"
+      class="rounded-2xl border border-dashed border-border bg-card/60 px-4 py-10 text-center text-sm text-muted-foreground"
+      role="status"
+    >
+      No {{ activeCategory === 'fun' ? 'Fun' : 'Utility' }} skills yet.
+    </p>
     <ul
       v-else
+      id="my-skills-list"
+      role="tabpanel"
+      :aria-labelledby="`my-skills-category-tab-${activeCategory}`"
       class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3"
     >
       <li
-        v-for="skill in skills"
+        v-for="skill in visibleSkills"
         :key="skill.id"
         class="flex flex-col gap-3 rounded-2xl border border-border bg-card p-4 shadow-none"
       >
@@ -299,6 +351,32 @@ function goCreate() {
         <p class="line-clamp-3 min-h-10 text-sm leading-relaxed text-muted-foreground">
           {{ skill.description || 'No description' }}
         </p>
+
+        <div class="flex items-center justify-between gap-2">
+          <span class="text-xs font-medium text-muted-foreground">Category</span>
+          <Select
+            :model-value="skill.category || 'utility'"
+            :disabled="busyId === skill.id"
+            @update:model-value="(value) => changeCategory(skill, value)"
+          >
+            <SelectTrigger
+              size="sm"
+              class="h-8 w-[120px] rounded-lg shadow-none"
+              :aria-label="`Category for ${skill.name}`"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem
+                v-for="option in SKILL_CATEGORIES"
+                :key="option"
+                :value="option"
+              >
+                {{ SKILL_CATEGORY_LABELS[option] }}
+              </SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
 
         <div class="mt-auto flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
           <label class="inline-flex cursor-pointer items-center gap-2 text-sm text-muted-foreground">
@@ -350,6 +428,7 @@ function goCreate() {
         </div>
       </li>
     </ul>
+    </template>
 
     <AlertDialog v-model:open="deleteOpen">
       <AlertDialogContent>

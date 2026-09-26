@@ -131,7 +131,7 @@ function mergeImages(existing: IAgentChatImage[], incoming: IAgentChatImage[]) {
   return [...map.values()].slice(0, MAX_IMAGES)
 }
 function statsFrom(messages: IAgentChatMessage[], images: IAgentChatImage[]) {
-  const generated = images.filter(item => item.kind !== 'upload')
+  const generated = images.filter(item => item.kind !== 'upload' && item.kind !== 'document')
   const lastUser = [...messages].reverse().find(item => item.role === 'user' && item.content)
   return {
     preview: clip(lastUser?.content, MAX_PREVIEW),

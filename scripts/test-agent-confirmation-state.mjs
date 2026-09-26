@@ -64,7 +64,7 @@ test('late pending snapshot cannot downgrade approval; detached jobs recover the
     fetch: async () => ({ ok: true, json: async () => snapshot }),
     shouldAutoApprove: () => false,
     syncLabBusyFromImages: () => {},
-
+    trackSnapshotFails: () => {},
     unionSessionImages: (_, incoming) => incoming,
     reconcileConfirmationStates,
   })

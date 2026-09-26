@@ -27,22 +27,6 @@
 </p>
 
 
-## Case study
-
-**Image Layer Splitter** — agent chat on the left handles every interaction; the infinite canvas on the right makes it easy to review and organize every asset.
-
-<p align="center">
-  <img src="docs/images/polox-readme-case-layer-split.jpeg" alt="Case study — layer splitting in agent chat and on the infinite canvas" width="100%" />
-</p>
-
-**Image Text Editor** — the LLM detects text coordinates and shows matching serial numbers on the canvas next to each editable text field.
-
-<p align="center">
-  <img src="docs/images/polox-readme-update-image-text-editor.jpeg" alt="Case study — Image Text Editor numbered regions matched to text fields" width="100%" />
-</p>
-
-<p align="center"><em>These are just two examples — more capabilities are covered below, or ask GrokBot or Codex to help you try them hands-on.</em></p>
-
 ## Introduction
 
 This is the open-source edition of [PoloX AI](https://polox.ai), a creative platform in the same space as [Lovart](https://lovart.ai) and [Crepal](https://crepal.ai). PoloX takes an **agent-native** approach: agent conversations and an infinite canvas bring creation, generation, and editing into one continuous workflow. Describe what you want, work with the agent, and refine the results on the canvas.
@@ -50,6 +34,24 @@ This is the open-source edition of [PoloX AI](https://polox.ai), a creative plat
 PoloX runs locally with Nuxt, Vue, and SQLite. Bring your own [WaveSpeed](https://wavespeed.ai) API key; no PoloX account or subscription is required. Projects, asset libraries, conversations, generation history, and media are stored on your machine. AI inference uses external providers, so relevant inputs are sent to those services and their API charges apply. WaveSpeed supports checkout with credit cards, WeChat Pay, and Alipay.
 
 ## Updates
+
+### September 26, 2026 — v2.1.0
+
+1. **LLM image budget** — each request accepts up to 8 images and 18 MB; older images are sent as links, local images are shrunk to 1536px WebP before upload, and a 413 response gets one retry.
+
+2. **More robust video generation** — added reference checks, frame-extraction and duration tools, and a last-frame fallback.
+
+3. **Document upload and reading** — upload PDF, Word, and Excel files; PoloX asks before reading them and provides Office previews. Video frame extraction and document features require `ffmpeg` and `ffprobe` (see the setup notes below).
+
+4. **Voice recorder and Talking Avatar** — added a voice recorder and rewrote the Talking Avatar skill.
+
+5. **Skill categories** — Utility and Fun categories now have homepage tabs, and Skill Creator asks for a category.
+
+6. **Skill covers** — set a skill cover directly from test results.
+
+7. **Smoother agent flows** — fixed IME Enter sending, made auto-retry smarter, improved homepage-to-agent handoff, and made Create Skill open the editor.
+
+8. **Lighter UI and prompts** — skill prompts use fewer tokens, and the Skills header stays on one row on mobile.
 
 ### September 21, 2026 — v2.0.0
 
@@ -161,7 +163,7 @@ Create a new task in GrokBot or Codex and send this prompt:
 ```text
 Help me install PoloX AI locally:
 1. Check that Node.js 22.20 or newer and pnpm are installed. Install any missing prerequisites.
-2. Install FFmpeg, including ffprobe, for video concatenation and verify that both commands are available.
+2. Install FFmpeg, including ffprobe, for video concatenation, video frame extraction, and document features; verify that both commands are available.
 3. Clone https://github.com/saihhold-zhao/polox_ai and open the project directory.
 4. Run pnpm i to install dependencies.
 ```
@@ -200,7 +202,7 @@ Use **Asset Libraries** in the sidebar to import shared media, then `@`-mention 
 
 ### FFmpeg for video concatenation
 
-Install **FFmpeg and ffprobe** to stitch generated clips into longer videos. Uploads and AI generation do not require them, and `pnpm i` does not install them.
+Install **FFmpeg and ffprobe** to stitch generated clips, extract video frames, and support document features. Uploads and AI generation do not require them, and `pnpm i` does not install them.
 
 macOS with Homebrew:
 

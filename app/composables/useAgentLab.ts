@@ -6,20 +6,21 @@ import type { GenerationJobPublic } from '~~/shared/types/generation'
 import type { GptImage2AspectRatio, GptImage2Resolution } from '~~/shared/utils/gptImage2'
 import type { ImageTextEdit, ImageTextLine } from '~~/shared/utils/imageTextEditor'
 import { publicGenerationFailMessage } from '~~/shared/types/generation'
-import { isInternalAgentChatText, publicAgentChatText } from '~~/shared/utils/agentChatVisibility'
+import { formatAutoRetryIds, isFailSuperseded } from '~~/shared/utils/agentAutoRetry'
+import { INTERNAL_AUTO_RETRY_MARKER, isAutoRetryUserInstruction, isInternalAgentChatText, publicAgentChatText } from '~~/shared/utils/agentChatVisibility'
 import { isAgentTransientMessage } from '~~/shared/utils/agentHistoryVisibility'
 import { completedLayerResults } from '~~/shared/utils/agentLayerResults'
 import { agentRecoveryNotice, isAgentDisconnectError as isDisconnectError, recoverAgentTranscript } from '~~/shared/utils/agentRecovery'
 import { readErrorMessage } from '~~/shared/utils/apiError'
 import { gptImage2ComboError } from '~~/shared/utils/gptImage2'
-import { isMediaVideoUrl } from '~~/shared/utils/seedance25'
+import { isMediaAudioUrl, isMediaDocumentUrl, isMediaVideoUrl } from '~~/shared/utils/seedance25'
 import { confirmationMedia, reconcileConfirmationStates } from '~/utils/agentConfirmationState'
 
 export type { AgentConfirmPolicy, AgentQuality }
 export type AgentStatus = 'idle' | 'thinking' | 'calling_tool' | 'generating' | 'queued'
 export type VideoFamily = 'seedance-2' | 'seedance-2-5' | 'wan-3'
 export type UncertainField = 'prompt' | 'aspect_ratio' | 'resolution' | 'duration'
-export type AgentImageKind = 'still' | 'cutout' | 'upload' | 'video' | 'audio'
+export type AgentImageKind = 'still' | 'cutout' | 'upload' | 'video' | 'audio' | 'document'
 
 const AGENT_VIDEO_TYPES = new Set([
   'video/mp4',
@@ -37,8 +38,9 @@ const AGENT_AUDIO_TYPES = new Set([
   'audio/aac',
   'audio/ogg',
   'audio/mp4',
+  'audio/webm',
 ])
-const AGENT_AUDIO_EXT = /\.(mp3|wav|aac|ogg|m4a)$/i
+const AGENT_AUDIO_EXT = /\.(mp3|wav|aac|ogg|m4a|webm)$/i
 
 
 function isAgentImageFile(file: File) {
@@ -54,10 +56,10 @@ function isAgentVideoFile(file: File) {
 }
 
 function isAgentAudioFile(file: File) {
-  const type = file.type.toLowerCase()
+  const type = file.type.toLowerCase().split(';')[0]!.trim()
   if (AGENT_AUDIO_TYPES.has(type))
     return true
-  return !type && AGENT_AUDIO_EXT.test(file.name)
+  return (!type || type === 'application/octet-stream') && AGENT_AUDIO_EXT.test(file.name)
 }
 
 export type ConfirmationKind = 'image' | 'video' | 'cutout' | 'mixed'
@@ -80,6 +82,10 @@ export interface AgentImage {
   videoMode?: 'text' | 'image' | 'reference' | 'concat'
   videoFamily?: VideoFamily
   providerTaskId?: string
+  /** Server epoch ms when this output first failed. */
+  failedAt?: number
+  /** Server already issued an automatic retry for this failure. */
+  autoRetryHandled?: boolean
 }
 export interface PendingAttachment {
   id: string
@@ -89,7 +95,7 @@ export interface PendingAttachment {
   status: 'uploading' | 'ready' | 'fail'
   error: string
   imageId?: string
-  kind?: 'image' | 'audio' | 'video'
+  kind?: 'image' | 'audio' | 'video' | 'document'
 }
 export interface ConfirmationPayload {
   jobs?: Array<{
@@ -131,6 +137,8 @@ export interface ChoiceQuestion {
   id: string
   title?: string
   prompt: string
+  /** Reading script shown in the in-chat voice recorder (voice_record); language matches the locked spoken language. */
+  script?: string
   options: ChoiceOption[]
   recommendedId?: string
 }
@@ -154,6 +162,8 @@ export interface ChoiceAnswer {
   textLines?: ImageTextLine[]
   imageUrl?: string
   regions?: number[][]
+  voiceUrl?: string
+  voiceName?: string
   questionId: string
   optionId?: string
   label?: string
@@ -402,6 +412,26 @@ function agentLabCacheKey(projectId: string) {
     return ''
   return pid
 }
+
+const AGENT_DOCUMENT_TYPES = new Set([
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'text/csv',
+  'application/csv',
+])
+const AGENT_DOCUMENT_EXT = /\.(pdf|doc|docx|ppt|pptx|xls|xlsx|csv)$/i
+
+function isAgentDocumentFile(file: File) {
+  const type = file.type.toLowerCase().split(';')[0]!.trim()
+  if (AGENT_DOCUMENT_TYPES.has(type))
+    return true
+  return (!type || type === 'application/octet-stream') && AGENT_DOCUMENT_EXT.test(file.name)
+}
 export function useAgentLab(options?: {
   projectId?: MaybeRefOrGetter<string>
   onJobs?: (jobs: GenerationJobPublic[]) => void
@@ -481,6 +511,18 @@ function createAgentLab(options?: {
   let streamEpoch = 0
   let activeTurns = 0
   let hydrating = false
+  // Auto-retry / fail notices only apply to failures observed live on this page.
+  // Fails already present in history (e.g. interrupted by a deploy days ago, refunded
+  // and regenerated) must never trigger another paid generation after a reload.
+  let failBaselineAgentId = ''
+  let failBaselineReady = false
+  let failBaselineAt = 0
+  const baselineFailIds = new Set<string>()
+  /** Media ids seen `generating` (or failing in a live, non-replayed SSE event) after the baseline. */
+  const liveObservedIds = new Set<string>()
+  // Server/client clocks may drift; older job failures than this are history.
+  const FAIL_BASELINE_SLACK_MS = 2 * 60 * 1000
+
   const busy = computed(() => pending.value || status.value !== 'idle')
   const waitingForUserConfirm = computed(() => Boolean(confirmation.value) && confirmation.value?.approvedBy !== 'agent')
   const waitingForUserChoice = computed(() => Boolean(choice.value))
@@ -610,6 +652,16 @@ function createAgentLab(options?: {
     }
   }
   function applyAgent(agent: StoredAgent) {
+    if (agent.id !== failBaselineAgentId) {
+      failBaselineAgentId = agent.id
+      failBaselineAt = Date.now()
+      // A fresh agent has no history to snapshot; a stored one waits for the server snapshot.
+      failBaselineReady = !agent.sessionId
+      for (const item of agent.images || []) {
+        if (item.status === 'fail')
+          baselineFailIds.add(item.id)
+      }
+    }
     activeAgentId.value = agent.id
     agentTitle.value = agent.title || DEFAULT_AGENT_TITLE
     titleSource.value = agent.titleSource || 'default'
@@ -802,6 +854,7 @@ function createAgentLab(options?: {
       const needed = image.status === 'generating'
         || image.status === 'fail'
         || image.kind === 'upload'
+        || image.kind === 'document'
         || image.kind === 'video'
         || image.kind === 'still'
         || image.kind === 'cutout'
@@ -1169,8 +1222,13 @@ function createAgentLab(options?: {
   function mergeStoredAgents(current: StoredAgent, incoming: StoredAgent): StoredAgent {
     const currentMessages = current.messages || []
     const incomingMessages = incoming.messages || []
+    // Session list rows use sessionId as agent id; keep the local UUID when present so
+    // activeAgentId continues to resolve after homepage → project handoff.
+    const preferIncomingId = (incomingMessages.length > currentMessages.length)
+      && Boolean(incoming.choice || incoming.confirmation || incoming.messages?.some(item => item.choice || item.confirmation))
     return {
       ...current,
+      id: preferIncomingId ? incoming.id : (current.id || incoming.id),
       title: current.titleSource === 'manual' ? current.title : (incoming.title || current.title),
       titleSource: current.titleSource === 'manual' ? 'manual' : (incoming.titleSource || current.titleSource),
       sessionId: current.sessionId || incoming.sessionId,
@@ -1191,6 +1249,13 @@ function createAgentLab(options?: {
     // that archive would replace the active agent ID and orphan its SSE events.
     if (!incoming.length || activeTurns > 0)
       return
+    // Homepage new-agent handoff writes the live transcript via SSE before
+    // storedAgents is committed. Merge from the live snapshot or applyAgent
+    // can replace a finished reply/choice with a stale user-only agent.
+    commitCurrentAgent()
+    const liveMessageCount = messages.value.length
+    const liveChoiceId = choice.value?.id || ''
+    const liveConfirmId = confirmation.value?.id || ''
     const byKey = new Map<string, StoredAgent>()
     for (const agent of [...incoming, ...storedAgents.value]) {
       const key = agent.sessionId || agent.id
@@ -1208,8 +1273,17 @@ function createAgentLab(options?: {
       || storedAgents.value.find(agent => agent.sessionId === sessionId.value && !isEmptyStoredAgent(agent))
       || storedAgents.value.find(agent => !isEmptyStoredAgent(agent))
       || storedAgents.value[0]
-    if (active)
-      applyAgent(active)
+    if (!active)
+      return
+    const nextCount = (active.messages || []).length
+    const nextHasLiveChoice = Boolean(liveChoiceId && active.messages?.some(item => item.choice?.id === liveChoiceId))
+    const nextHasLiveConfirm = Boolean(liveConfirmId && active.messages?.some(item => item.confirmation?.id === liveConfirmId))
+    // Never clobber a richer in-memory turn (common after / → project navigation).
+    if (nextCount < liveMessageCount && (choice.value || confirmation.value || pending.value))
+      return
+    if ((liveChoiceId && !nextHasLiveChoice && choice.value) || (liveConfirmId && !nextHasLiveConfirm && confirmation.value))
+      return
+    applyAgent(active)
   }
   async function hydrateRemoteChats() {
     if (!projectScope.value)
@@ -1349,6 +1423,7 @@ function createAgentLab(options?: {
       }
       if (Array.isArray(data.images) && data.images.length)
         images.value = unionSessionImages(images.value, data.images)
+      trackSnapshotFails(images.value)
       syncLabBusyFromImages()
       let hasPendingConfirm = false
       if (data.pendingConfirmation) {
@@ -1732,6 +1807,12 @@ function createAgentLab(options?: {
       })
       return
     }
+
+    if (event.type === 'image' && event.image && !event.replay && event.image.kind !== 'upload' && failBaselineReady
+      && (event.image.status === 'generating' || event.image.status === 'fail')) {
+      // Live SSE output of the current turn (replayed catch-up images are history).
+      liveObservedIds.add(event.image.id)
+    }
     const next = applyEventToState(event, {
       sessionId: sessionId.value,
       messages: messages.value,
@@ -1829,7 +1910,7 @@ function createAgentLab(options?: {
   function attachUrls(items: Array<{
     url: string
     name?: string
-    kind?: 'image' | 'audio' | 'video'
+    kind?: 'image' | 'audio' | 'video' | 'document'
   }>) {
     const next = items.filter((item) => {
       const url = String(item.url || '').trim()
@@ -1852,14 +1933,18 @@ function createAgentLab(options?: {
       // the active one, so attaching a canvas asset never duplicates its record.
       const existing = images.value.find(image => image.url === item.url)
         || storedAgents.value.flatMap(agent => agent.images || []).find(image => image.url === item.url)
+      const audio = item.kind === 'audio' || existing?.kind === 'audio' || isMediaAudioUrl(item.url)
+      const video = !audio && (item.kind === 'video' || existing?.kind === 'video' || isMediaVideoUrl(item.url))
+      const document = !audio && !video && (item.kind === 'document' || existing?.kind === 'document' || isMediaDocumentUrl(item.url) || /\.(pdf|docx?|pptx?|xlsx?|csv)$/i.test(item.name || ''))
       const imageId = existing?.id || crypto.randomUUID()
       const local = images.value.find(image => image.url === item.url)
       if (!local) {
         images.value.unshift({
           id: imageId,
-          kind: 'upload',
+          kind: document ? 'document' : audio ? 'audio' : video ? 'video' : 'upload',
           status: 'success',
-          prompt: item.name || 'Canvas still',
+          name: item.name || (document ? 'Document' : audio ? 'Voice reference' : video ? 'Video reference' : 'Canvas still'),
+          prompt: item.name || (document ? 'Document' : audio ? 'Voice reference' : video ? 'Video reference' : 'Canvas still'),
           aspectRatio: 'auto',
           resolution: '',
           url: item.url,
@@ -1868,18 +1953,25 @@ function createAgentLab(options?: {
       }
       attachments.value = [...attachments.value, {
         id: crypto.randomUUID(),
-        name: item.name || 'Canvas still',
-        previewUrl: item.url,
+        name: item.name || (document ? 'Document' : audio ? 'Voice reference' : video ? 'Video reference' : 'Canvas still'),
+        previewUrl: (audio || document) ? '' : item.url,
         url: item.url,
         status: 'ready',
         error: '',
         imageId,
+        kind: document ? 'document' : audio ? 'audio' : video ? 'video' : 'image',
       }]
     }
   }
   async function uploadAnnotationImage(file: File, requirePersist = false) {
-    if (!['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(file.type) || file.size > 10 * 1024 * 1024)
+    const isImage = isAgentImageFile(file)
+    const isAudio = isAgentAudioFile(file)
+    if (!isImage && !isAudio)
+      throw new Error('Upload a JPEG, PNG, WEBP, GIF, or MP3/WAV/AAC/OGG/M4A/WEBM up to the size limit.')
+    if (isImage && file.size > 10 * 1024 * 1024)
       throw new Error('Upload a JPEG, PNG, WEBP, or GIF up to 10MB.')
+    if (isAudio && file.size > 15 * 1024 * 1024)
+      throw new Error('Upload MP3/WAV/AAC/OGG/M4A/WEBM audio up to 15MB.')
     const id = await ensureSession()
     const body = new FormData()
     body.append('file', file)
@@ -1899,9 +1991,9 @@ function createAgentLab(options?: {
   }
 
   async function attachFiles(fileList: File[]) {
-    const accepted = fileList.filter(file => isAgentImageFile(file) || isAgentAudioFile(file) || isAgentVideoFile(file))
+    const accepted = fileList.filter(file => isAgentImageFile(file) || isAgentAudioFile(file) || isAgentVideoFile(file) || isAgentDocumentFile(file))
     if (!accepted.length) {
-      setLabError('Upload JPEG, PNG, WEBP, GIF, MP4/MOV/WEBM video, or MP3/WAV/AAC/OGG/M4A')
+      setLabError('Upload JPEG, PNG, WEBP, GIF, MP4/MOV/WEBM video, MP3/WAV/AAC/OGG/M4A/WEBM audio, or PDF/DOCX/PPTX/XLSX/CSV')
       return
     }
     if (attachments.value.length + accepted.length > 9) {
@@ -1913,23 +2005,26 @@ function createAgentLab(options?: {
     for (const file of accepted) {
       const audio = isAgentAudioFile(file)
       const video = !audio && isAgentVideoFile(file)
-      const maxBytes = audio ? 15 * 1024 * 1024 : video ? 200 * 1024 * 1024 : 10 * 1024 * 1024
+      const document = !audio && !video && isAgentDocumentFile(file)
+      const maxBytes = audio ? 15 * 1024 * 1024 : video ? 200 * 1024 * 1024 : document ? 40 * 1024 * 1024 : 10 * 1024 * 1024
       if (file.size > maxBytes) {
         setLabError(audio
           ? 'Each audio file must be 15MB or smaller'
           : video
             ? 'Each video must be 200MB or smaller'
-            : 'Each image must be 10MB or smaller')
+            : document
+              ? 'Each document must be 40MB or smaller'
+              : 'Each image must be 10MB or smaller')
         continue
       }
       const local: PendingAttachment = {
         id: crypto.randomUUID(),
         name: file.name,
-        previewUrl: audio ? '' : URL.createObjectURL(file),
+        previewUrl: (audio || document) ? '' : URL.createObjectURL(file),
         url: '',
         status: 'uploading',
         error: '',
-        kind: audio ? 'audio' : video ? 'video' : 'image',
+        kind: audio ? 'audio' : video ? 'video' : document ? 'document' : 'image',
       }
       attachments.value = [...attachments.value, local]
       try {
@@ -1955,6 +2050,12 @@ function createAgentLab(options?: {
           current.status = 'ready'
           current.url = payload.image.url
           current.imageId = payload.image.id
+          if (payload.image.kind === 'document')
+            current.kind = 'document'
+          else if (payload.image.kind === 'audio')
+            current.kind = 'audio'
+          else if (payload.image.kind === 'video')
+            current.kind = 'video'
         }
         const index = images.value.findIndex(item => item.id === payload.image!.id)
         if (index >= 0)
@@ -2394,10 +2495,12 @@ function createAgentLab(options?: {
           const last = messages.value[messages.value.length - 1]
           if (last?.streaming)
             last.streaming = false
+          writeStore()
           void persistCanvasResults().then(() => {
             if (epoch !== streamEpoch)
               return
             trimLab()
+            writeStore()
             void persistChat()
           })
         }
@@ -2413,16 +2516,29 @@ function createAgentLab(options?: {
       return false
     return !(payload.uncertainFields?.length)
   }
+
+  /** Auto-approve POST in flight for these confirmation ids. */
   const autoApprovingIds = new Set<string>()
+  /** Auto-approve already accepted (or server says it is no longer pending): never POST again. */
+  const autoApprovedIds = new Set<string>()
+  /** Failed auto-approve attempts per id (network / lock errors); capped to stop 409 storms. */
+  const autoApproveAttempts = new Map<string, number>()
+  const AUTO_APPROVE_MAX_ATTEMPTS = 3
+
   async function maybeAutoApprove() {
     if (stopping.value || Date.now() < agentWriteRetryAt)
       return
     const open = confirmation.value
-    if (!open || !sessionId.value || !shouldAutoApprove(open) || autoApprovingIds.has(open.id))
+    if (!open || !sessionId.value || !shouldAutoApprove(open) || autoApprovingIds.has(open.id) || autoApprovedIds.has(open.id))
+      return
+    if ((autoApproveAttempts.get(open.id) || 0) >= AUTO_APPROVE_MAX_ATTEMPTS)
       return
     autoApprovingIds.add(open.id)
+    autoApproveAttempts.set(open.id, (autoApproveAttempts.get(open.id) || 0) + 1)
     try {
-      await resolveConfirmation('confirm', open.params, 'agent')
+      const outcome = await resolveConfirmation('confirm', open.params, 'agent')
+      if (outcome === 'accepted' || outcome === 'stale')
+        autoApprovedIds.add(open.id)
     }
     finally {
       autoApprovingIds.delete(open.id)
@@ -2452,6 +2568,22 @@ function createAgentLab(options?: {
     clearInterval(jobSyncTimer)
     jobSyncTimer = undefined
   }
+  /** Recent human user text leans Chinese → zh UI copy; otherwise English (matches prompt default). */
+  function sessionPrefersChineseUi() {
+    const recent = [...messages.value]
+      .reverse()
+      .filter(item => item.role === 'user' && !isAutoRetryUserInstruction(item.content || ''))
+      .slice(0, 8)
+      .map(item => publicAgentChatText(String(item.content || '')))
+      .filter(Boolean)
+    const joined = recent.join('\n')
+    if (!joined.trim())
+      return false
+    const han = (joined.match(/\p{Script=Han}/gu) || []).length
+    const letters = (joined.match(/[A-Za-z\p{Script=Han}]/gu) || []).length
+    return letters > 0 && han / letters >= 0.3
+  }
+
   async function retryFailedMedia(items: AgentImage[]) {
     const retryable = items.filter((item) => {
       // Splits have an exact source/box plan; a generic LLM retry can rerun successful images.
@@ -2463,19 +2595,31 @@ function createAgentLab(options?: {
     })
     if (!retryable.length)
       return false
+    const retryIds = new Set(retryable.map(item => item.id))
     for (const item of retryable)
       autoRetries.set(item.id, (autoRetries.get(item.id) || 0) + 1)
+    // Mirror the server marker so a snapshot saved from this page never retries them again.
+    images.value = images.value.map(item => retryIds.has(item.id) ? { ...item, autoRetryHandled: true } : item)
+
+    const zh = sessionPrefersChineseUi()
     const note = retryable.length === 1
-      ? '有一条镜头生成失败，正在自动重试。'
-      : `有 ${retryable.length} 条镜头生成失败，正在自动重试。`
+      ? (zh ? '有一条镜头生成失败，正在自动重试。' : 'One shot failed to generate. Retrying automatically.')
+      : (zh
+          ? `有 ${retryable.length} 条镜头生成失败，正在自动重试。`
+          : `${retryable.length} shots failed to generate. Retrying automatically.`)
     messages.value.push({
       id: crypto.randomUUID(),
       role: 'assistant',
       content: note,
     })
-    const instruction = retryable.length === 1
-      ? `刚才有镜头失败了（原因：${publicGenerationFailMessage(retryable[0]?.error)}）。请只重试失败的那一镜，使用相同的参考图、时长、比例和提示词，不要重拍整部片子。失败镜头：${retryable[0]?.prompt || ''}`
-      : `刚才有镜头失败了。请只重试失败的镜头，使用相同的参考图、时长、比例和提示词，不要重拍整部片子。\n${retryable.map(item => `- ${item.prompt}（${publicGenerationFailMessage(item.error)}）`).join('\n')}`
+    // Always English for the synthetic user turn: matches server prompt language policy and
+    // avoids flipping an English session to Chinese. INTERNAL_AUTO_RETRY_MARKER hides this
+    // turn from chat UI (users only see what they typed).
+    const instructionBody = retryable.length === 1
+      ? `A shot just failed (reason: ${publicGenerationFailMessage(retryable[0]?.error)}). Retry only that failed shot with the same reference images, duration, aspect ratio, and prompt. Do not remake the whole film. Failed shot: ${retryable[0]?.prompt || ''}`
+      : `Some shots just failed. Retry only the failed shots with the same reference images, duration, aspect ratio, and prompts. Do not remake the whole film.\n${retryable.map(item => `- ${item.prompt} (${publicGenerationFailMessage(item.error)})`).join('\n')}`
+    // The id line lets the server refuse stale/duplicate auto retries (it is stripped before the LLM).
+    const instruction = [INTERNAL_AUTO_RETRY_MARKER, instructionBody, formatAutoRetryIds([...retryIds])].filter(Boolean).join('\n')
     pending.value = true
     status.value = 'thinking'
     stopping.value = false
@@ -2488,9 +2632,12 @@ function createAgentLab(options?: {
   function notifyFailedMedia(items: AgentImage[]) {
     if (!items.length)
       return
+    const zh = sessionPrefersChineseUi()
     const content = items.length === 1
-      ? '有一条镜头生成失败。需要我再试这一镜吗？'
-      : `有 ${items.length} 条镜头生成失败。需要我再试吗？`
+      ? (zh ? '有一条镜头生成失败。需要我再试这一镜吗？' : 'One shot failed to generate. Want me to retry that shot?')
+      : (zh
+          ? `有 ${items.length} 条镜头生成失败。需要我再试吗？`
+          : `${items.length} shots failed to generate. Want me to retry?`)
     const last = messages.value[messages.value.length - 1]
     if (last?.role === 'assistant' && last.content === content)
       return
@@ -2501,10 +2648,64 @@ function createAgentLab(options?: {
     })
   }
   const notifiedFails = new Set<string>()
+
+  /**
+   * Called with every authoritative server snapshot. The first one after load marks all
+   * current fails as history; afterwards, record media the server reports as running.
+   */
+  function trackSnapshotFails(list: AgentImage[]) {
+    if (!failBaselineReady) {
+      for (const item of list) {
+        if (item.status === 'fail')
+          baselineFailIds.add(item.id)
+      }
+      failBaselineReady = true
+    }
+    for (const item of list) {
+      if (item.status === 'generating' && item.kind !== 'upload')
+        liveObservedIds.add(item.id)
+    }
+  }
+
+  /** Same shot already regenerated (success or still running) outside its own batch. */
+  function failSupersededInChat(fail: AgentImage) {
+    const siblings = new Set<string>([fail.id])
+    for (const message of messages.value) {
+      const ids = message.imageIds || []
+      const batch = message.confirmation ? confirmationMedia(message, images.value).map(item => item.id) : []
+      if (!ids.includes(fail.id) && !batch.includes(fail.id))
+        continue
+      // Same-prompt variations from the same card/turn are siblings, not replacements.
+      for (const id of [...ids, ...batch])
+        siblings.add(id)
+    }
+    return isFailSuperseded(fail, images.value, siblings)
+  }
+
+  /** Only failures that turned `fail` while this page watched may be retried or announced. */
+  function isFreshFail(item: AgentImage) {
+    if (item.status !== 'fail' || item.kind === 'upload')
+      return false
+    if (!failBaselineReady || baselineFailIds.has(item.id) || !liveObservedIds.has(item.id))
+      return false
+    if (item.autoRetryHandled)
+      return false
+    if (item.failedAt && item.failedAt < failBaselineAt - FAIL_BASELINE_SLACK_MS)
+      return false
+    return !failSupersededInChat(item)
+  }
+
   function unnotifiedFails(items: AgentImage[]) {
     return items.filter((item) => {
       if (item.status !== 'fail' || notifiedFails.has(item.id))
         return false
+      if (!isFreshFail(item)) {
+        // History fails stay silent. Leave live-but-not-yet-confirmed ones for a later pass.
+        if (!failBaselineReady || baselineFailIds.has(item.id) || !liveObservedIds.has(item.id) || item.autoRetryHandled)
+          return false
+        notifiedFails.add(item.id)
+        return false
+      }
       notifiedFails.add(item.id)
       return true
     })
@@ -2587,12 +2788,18 @@ function createAgentLab(options?: {
       }
     }
     if (job.state === 'fail') {
+      const failedAt = Date.parse(job.completedAt || job.updatedAt || '')
       const next = {
         ...current,
         status: 'fail' as const,
         error: job.failMsg || 'Generation failed',
+        ...(Number.isFinite(failedAt) && failedAt > 0 ? { failedAt } : {}),
       }
       images.value[index] = next
+      // A job that already failed before this page loaded (e.g. a deploy restart while
+      // the tab was closed) is history even though the local snapshot still said generating.
+      if (!failBaselineReady || (Number.isFinite(failedAt) && failedAt < failBaselineAt - FAIL_BASELINE_SLACK_MS))
+        baselineFailIds.add(next.id)
       return next
     }
     return null
@@ -2745,7 +2952,11 @@ function createAgentLab(options?: {
     }
     stopJobSync()
   }, { immediate: true })
-  async function resolveConfirmation(action: 'confirm' | 'cancel', params?: ConfirmationPayload['params'], approvedBy: 'agent' | 'user' = 'user') {
+  /**
+   * `accepted`: server took the request. `stale`: the confirmation is no longer pending
+   * server-side (already started / processed). `failed`: error surfaced or aborted.
+   */
+  async function resolveConfirmation(action: 'confirm' | 'cancel', params?: ConfirmationPayload['params'], approvedBy: 'agent' | 'user' = 'user'): Promise<'accepted' | 'stale' | 'failed' | undefined> {
     if (!confirmation.value || !sessionId.value)
       return
     if (action === 'confirm' && params && (confirmation.value.kind || 'image') === 'image') {
@@ -2773,6 +2984,8 @@ function createAgentLab(options?: {
     const epoch = streamEpoch
     const runAgentId = activeAgentId.value
     const confirmSessionId = sessionId.value
+    const autoApproval = approvedBy === 'agent'
+    let outcome: 'accepted' | 'stale' | 'failed' = 'failed'
     activeTurns += 1
     try {
       let locked = false
@@ -2791,6 +3004,18 @@ function createAgentLab(options?: {
         })
         if (response.status === 409) {
           busyMessage = await parseError(response)
+          // Auto-approve: the card is no longer pending server-side (task already started or
+          // another tab/poll confirmed it). Re-POSTing the same id only yields more 409s.
+          if (autoApproval && /already processed|already in progress|no matching confirmation/i.test(busyMessage)) {
+            started = true
+            locked = false
+            outcome = 'stale'
+            if ((confirmation.value as ConfirmationPayload | null)?.id === confirmationId)
+              confirmation.value = null
+            if (action === 'confirm' && activeAgentId.value === runAgentId)
+              status.value = 'generating'
+            break
+          }
           // Confirm was already accepted server-side (browser may have closed mid-flight).
           if (/already processed|already in progress|no matching confirmation/i.test(busyMessage)) {
             await hydrateServer()
@@ -2798,6 +3023,7 @@ function createAgentLab(options?: {
             if (!stillOpen) {
               started = true
               locked = false
+              outcome = 'stale'
               if (action === 'confirm' && activeAgentId.value === runAgentId)
                 status.value = 'generating'
               break
@@ -2808,7 +3034,7 @@ function createAgentLab(options?: {
           continue
         }
         if (epoch !== streamEpoch)
-          return
+          return response.ok ? 'accepted' : outcome
         started = true
         const contentType = response.headers.get('content-type') || ''
         // Detached confirm: BFF returns JSON after kicking off server-side generation.
@@ -2825,23 +3051,31 @@ function createAgentLab(options?: {
           if (action === 'confirm' && activeAgentId.value === runAgentId)
             status.value = payload.status === 'idle' ? 'idle' : 'generating'
           locked = false
+          outcome = 'accepted'
           break
         }
         locked = await consumeSse(response, epoch, runAgentId)
-        if (!locked)
+        if (!locked) {
+          outcome = 'accepted'
           break
+        }
         busyMessage = 'This session is already running'
         await new Promise(resolve => setTimeout(resolve, 80 * (attempt + 1)))
       }
       if (epoch !== streamEpoch)
-        return
+        return outcome
       if (!started || locked)
         throw new Error(busyMessage || 'This session is already running')
     }
     catch (err) {
+      outcome = 'failed'
       if (epoch !== streamEpoch)
-        return
-      if (activeAgentId.value === runAgentId) {
+        return outcome
+      if (autoApproval && /no matching confirmation/i.test(err instanceof Error ? err.message : '')) {
+        // Stale auto-approve: nothing for the user to act on.
+        outcome = 'stale'
+      }
+      else if (activeAgentId.value === runAgentId) {
         const text = err instanceof Error ? err.message : 'Failed to resolve confirmation'
         setLabError(text, !isSessionLockError(text))
         if (message?.confirmation) {
@@ -2880,6 +3114,7 @@ function createAgentLab(options?: {
           last.streaming = false
       }
     }
+    return outcome
   }
   async function resolveChoice(action: 'submit' | 'skip', answers?: ChoiceAnswer[]) {
     if (!choice.value || !sessionId.value)
@@ -2994,6 +3229,9 @@ function createAgentLab(options?: {
     bumpStream()
     stopJobSync()
     autoRetries.clear()
+    // Next applyAgent re-snapshots history fails and waits for a fresh server snapshot.
+    failBaselineAgentId = ''
+    failBaselineReady = false
     persistedCanvasIds.clear()
     patchedInputIds.clear()
     storedAgents.value = []
@@ -3138,6 +3376,7 @@ function createAgentLab(options?: {
     // A page handoff must not replace a live turn with an archived snapshot.
     if (activeTurns > 0)
       return
+    commitCurrentAgent()
     await hydrateRemoteChats()
     await hydrateRemoteSessions()
     await hydrateServer()

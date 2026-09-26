@@ -100,7 +100,7 @@ export function parseClientImages(raw: unknown): AgentImage[] {
     const id = clip(row.id, 120)
     if (!id || seen.has(id))
       continue
-    const kind = row.kind === 'video' || row.kind === 'cutout' || row.kind === 'upload' || row.kind === 'still'
+    const kind = row.kind === 'video' || row.kind === 'cutout' || row.kind === 'upload' || row.kind === 'still' || row.kind === 'audio' || row.kind === 'document'
       ? row.kind as AgentImageKind
       : 'still'
     const status = row.status === 'generating' || row.status === 'fail' || row.status === 'success'
@@ -138,6 +138,8 @@ export function parseClientImages(raw: unknown): AgentImage[] {
       videoFamily,
       modelId: typeof row.modelId === 'string' ? row.modelId : undefined,
       modelInput: row.modelInput && typeof row.modelInput === 'object' ? row.modelInput as Record<string, unknown> : undefined,
+      ...(status === 'fail' && Number.isFinite(Number(row.failedAt)) && Number(row.failedAt) > 0 ? { failedAt: Math.floor(Number(row.failedAt)) } : {}),
+      ...(status === 'fail' && row.autoRetryHandled === true ? { autoRetryHandled: true } : {}),
     })
     if (items.length >= MAX_IMAGES)
       break

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { saveMediaFile } from '../utils/localMedia'
+import { ffmpegBin } from '../utils/ffmpegBin'
 
 const execFileAsync = promisify(execFile)
 const MAX_CLIP_BYTES = 120 * 1024 * 1024
@@ -40,7 +41,7 @@ function storageErrorMessage(error: unknown) {
 }
 async function runFfmpeg(args: string[], timeout: number, signal?: AbortSignal) {
   try {
-    await execFileAsync('ffmpeg', args, {
+    await execFileAsync(ffmpegBin(), args, {
       timeout,
       signal,
       maxBuffer: 2 * 1024 * 1024,

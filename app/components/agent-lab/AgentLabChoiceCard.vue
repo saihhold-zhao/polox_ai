@@ -14,6 +14,7 @@ const props = withDefaults(defineProps<{
   pending?: boolean
   referenceImages?: ImageAnnotationReference[]
   uploadImage?: (file: File) => Promise<ImageAnnotationReference>
+  uploadAudio?: (file: File) => Promise<{ url: string, name: string }>
   sourceImages?: { id: string, url: string }[]
 }>(), {
   pending: false,
@@ -26,10 +27,18 @@ const emit = defineEmits<{
   browseAssets: []
 }>()
 
-const questions = computed(() => standaloneImageEditQuestions(props.choice.questions).map(question => ({
-  ...question,
-  options: withCustomChoiceOption(question.options),
-})))
+const questions = computed(() => standaloneImageEditQuestions(props.choice.questions).map((question) => {
+  if (question.id === 'voice_record') {
+    const options = question.options.some(option => option.id === 'recorded')
+      ? question.options
+      : [...question.options, { id: 'recorded', label: 'Finish' }]
+    return { ...question, options }
+  }
+  return {
+    ...question,
+    options: withCustomChoiceOption(question.options),
+  }
+}))
 
 const recommendation = computed(() => {
   const method = questions.value.find(question => question.id === 'image_edit_method' || question.id === 'object_removal_method')
@@ -85,6 +94,10 @@ const annotating = computed(() => selections.value.image_edit_method?.optionId =
 const removing = computed(() => selections.value.object_removal_method?.optionId === 'annotate')
 const selecting = ref(false)
 const drawing = computed(() => selections.value.layer_selection_method?.optionId === 'draw_boxes')
+const recordingVoice = computed(() => questions.value.some(question => question.id === 'voice_record'))
+const voiceRecordQuestion = computed(() => questions.value.find(question => question.id === 'voice_record') || null)
+const voiceUrl = ref('')
+const voiceName = ref('')
 const submittingOverlay = ref(false)
 watch(() => props.sourceImages, (images) => {
   if (!images?.some(image => image.url === sourceUrl.value))
@@ -101,6 +114,8 @@ watch(
     regionsByImage.value = {}
     annotationPointsByImage.value = {}
     removalTargetsByImage.value = {}
+    voiceUrl.value = ''
+    voiceName.value = ''
     for (const answer of props.answers || []) {
       if (answer.annotationEdit) {
         sourceUrl.value = answer.annotationEdit.imageUrl
@@ -117,6 +132,10 @@ watch(
           if (props.sourceImages?.some(image => image.url === selection.imageUrl))
             regionsByImage.value[selection.imageUrl] = selection.regions.map(box => [...box] as ImageLayerRegion)
         }
+      }
+      if (answer.questionId === 'voice_record' && answer.voiceUrl) {
+        voiceUrl.value = answer.voiceUrl
+        voiceName.value = answer.voiceName || ''
       }
     }
     // Open the annotation canvas immediately when Annotate is the recommended method.
@@ -141,6 +160,61 @@ watch(
   },
   { immediate: true },
 )
+
+function onVoiceReady(payload: { url: string, name: string }) {
+  voiceUrl.value = payload.url
+  voiceName.value = payload.name
+  const question = voiceRecordQuestion.value
+  if (!question || props.readOnly || !isPending.value)
+    return
+  const recorded = question.options.find(option => option.id === 'recorded')
+  if (recorded)
+    selectOption(question, recorded.id)
+  else {
+    selections.value = {
+      ...selections.value,
+      voice_record: { optionId: 'recorded', text: '' },
+    }
+  }
+}
+
+/** Recorder Finish — submit voiceUrl directly (do not rely on canSubmit / option tiles). */
+async function onVoiceFinish(payload: { url: string, name: string }) {
+  const url = String(payload.url || '').trim()
+  if (!url || props.readOnly || !isPending.value || props.pending || uploading.value)
+    return
+  voiceUrl.value = url
+  voiceName.value = payload.name || ''
+  selections.value = {
+    ...selections.value,
+    voice_record: { optionId: 'recorded', text: '' },
+  }
+  const recorded = voiceRecordQuestion.value?.options.find(option => option.id === 'recorded')
+  emit('submit', questions.value.map((question) => {
+    if (question.id !== 'voice_record') {
+      const current = selections.value[question.id]
+      const option = selectedOption(question)
+      return {
+        questionId: question.id,
+        optionId: current?.optionId,
+        label: option?.label,
+        text: current?.text.trim() || undefined,
+      }
+    }
+    return {
+      questionId: 'voice_record',
+      optionId: 'recorded',
+      label: recorded?.label || 'Finish',
+      voiceUrl: url,
+      ...(voiceName.value ? { voiceName: voiceName.value } : {}),
+    }
+  }))
+}
+
+function onVoiceClear() {
+  voiceUrl.value = ''
+  voiceName.value = ''
+}
 
 function selectedOption(question: ChoiceQuestion) {
   const current = selections.value[question.id]
@@ -187,6 +261,10 @@ const canSubmit = computed(() => {
     return false
   if (drawing.value && (!imageSelections.value.length || imageSelections.value.some(selection => !selection.regions.length) || selecting.value))
     return false
+  if (recordingVoice.value) {
+    if (selections.value.voice_record?.optionId === 'recorded' && !voiceUrl.value)
+      return false
+  }
   return questions.value.every((question) => {
     const option = selectedOption(question)
     if (!option)
@@ -242,6 +320,9 @@ async function emitSubmit() {
         : {}),
       ...(question.id === 'layer_selection_method' && current?.optionId === 'draw_boxes'
         ? { imageSelections: imageSelections.value }
+        : {}),
+      ...(question.id === 'voice_record' && current?.optionId === 'recorded' && voiceUrl.value
+        ? { voiceUrl: voiceUrl.value, ...(voiceName.value ? { voiceName: voiceName.value } : {}) }
         : {}),
     }
   }))
@@ -340,6 +421,12 @@ const resolvedAnswers = computed(() => {
         {{ recommendation }}
       </CardDescription>
       <p
+        v-else-if="isPending && !readOnly && recordingVoice"
+        class="text-xs text-muted-foreground"
+      >
+        Record with the mic, then tap Finish. Skip lets the agent decide.
+      </p>
+      <p
         v-else-if="isPending && !readOnly"
         class="text-xs text-muted-foreground"
       >
@@ -361,7 +448,7 @@ const resolvedAnswers = computed(() => {
             >
               {{ question.title }}
             </span>
-            <div class="flex items-start gap-2">
+            <div v-if="question.id !== 'voice_record'" class="flex items-start gap-2">
               <div class="relative min-w-0 flex-1">
                 <span
                   class="block text-sm font-medium whitespace-pre-wrap text-foreground"
@@ -394,7 +481,10 @@ const resolvedAnswers = computed(() => {
               </button>
             </div>
           </legend>
-          <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <div
+            v-if="question.id !== 'voice_record'"
+            class="grid grid-cols-1 gap-2 sm:grid-cols-2"
+          >
             <button
               v-for="option in question.options"
               :key="option.id"
@@ -428,7 +518,7 @@ const resolvedAnswers = computed(() => {
             </button>
           </div>
           <Input
-            v-if="selectedOption(question)?.custom"
+            v-if="question.id !== 'voice_record' && selectedOption(question)?.custom"
             :id="`agent-choice-${choice.id}-${question.id}`"
             :model-value="selections[question.id]?.text || ''"
             :disabled="pending || readOnly || uploading"
@@ -476,6 +566,18 @@ const resolvedAnswers = computed(() => {
             No source image is available. Upload an image in the chat first.
           </p>
         </section>
+        <section v-if="recordingVoice" class="flex min-w-0 flex-col gap-3" aria-label="Record voice sample">
+          <AgentLabVoiceRecorder
+            :prompt="voiceRecordQuestion?.prompt || ''"
+            :script="voiceRecordQuestion?.script || ''"
+            :disabled="pending || readOnly || uploading"
+            :upload-audio="uploadAudio || uploadImage"
+            @ready="onVoiceReady"
+            @finish="onVoiceFinish"
+            @clear="onVoiceClear"
+            @uploading="uploading = $event"
+          />
+        </section>
       </div>
     </CardContent>
 
@@ -503,6 +605,9 @@ const resolvedAnswers = computed(() => {
           <p v-else-if="item.answer?.regions?.length" class="mt-1 text-xs text-muted-foreground">
             {{ item.answer.regions.length }} regions confirmed
           </p>
+          <p v-if="item.answer?.voiceUrl" class="mt-1 text-xs text-muted-foreground">
+            Voice sample{{ item.answer.voiceName ? `: ${item.answer.voiceName}` : '' }} saved
+          </p>
         </div>
       </div>
     </CardContent>
@@ -518,6 +623,7 @@ const resolvedAnswers = computed(() => {
         Skip
       </Button>
       <Button
+        v-if="!recordingVoice"
         size="sm"
         class="rounded-lg shadow-none"
         :disabled="!canSubmit"

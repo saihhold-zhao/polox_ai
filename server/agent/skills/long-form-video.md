@@ -1,3 +1,11 @@
+---
+id: long-form-video
+name: Long-form storyboard video
+description: Long video, short film, storyboard, or multi-shot story longer than one clip. Model choice, storyboard, character stills, clips, then concat_videos.
+visibility: catalog
+triggers:
+  - /long-form-video
+---
 # Long-form video
 
 Write image/video generation instructions in English; keep quoted dialogue and narration in the confirmed spoken language; do not translate those spoken lines into English unless English was selected. Every ask_user question must include an Other option with `allow_custom: true` so the user can enter a custom answer.

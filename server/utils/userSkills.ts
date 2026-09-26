@@ -3,7 +3,8 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import process from 'node:process'
 import { isBuiltinSkillId, parseSkillMarkdown, userSkillsDir, type SkillDocument } from '../agent/skills'
-import { UserSkill, type IUserSkill, type UserSkillSource } from '../models/userSkill'
+import { normalizeSkillCategory, type SkillCategory } from '../../shared/utils/skillCategory'
+import { UserSkill, type IUserSkill, type UserSkillCategory, type UserSkillSource } from '../models/userSkill'
 import { connectDatabase } from './sqlite'
 import { validateUserSkillMarkdown } from './skillValidation'
 
@@ -24,9 +25,18 @@ export function ensureUserSkillsReady() {
   mkdirSync(userSkillsDir(), { recursive: true })
 }
 
-export async function listUserSkillRecords() {
+/** Local query filter for a category. Legacy rows without `category` count as utility. */
+export function skillCategoryQuery(category?: SkillCategory): { category?: SkillCategory | { $nin: SkillCategory[] } } {
+  if (!category)
+    return {}
+  if (category === 'utility')
+    return { category: { $nin: ['fun'] } }
+  return { category }
+}
+
+export async function listUserSkillRecords(category?: SkillCategory) {
   ensureUserSkillsReady()
-  return UserSkill.find({}).sort({ updatedAt: -1 })
+  return UserSkill.find({ ...skillCategoryQuery(category) }).sort({ updatedAt: -1 })
 }
 
 export async function listEnabledUserCatalog() {
@@ -38,6 +48,7 @@ export async function listEnabledUserCatalog() {
       name: row.name,
       description: row.description,
       triggers: row.triggers,
+      category: normalizeSkillCategory(row.category),
       visibility: 'catalog' as const,
     }))
 }
@@ -65,6 +76,8 @@ export interface PersistUserSkillInput {
   projectId?: string
   cover?: string
   keywords?: string
+  /** utility | fun. Omit to keep existing (or frontmatter / default utility for new skills). */
+  category?: UserSkillCategory
 }
 
 export async function persistUserSkill(input: PersistUserSkillInput) {
@@ -82,7 +95,11 @@ export async function persistUserSkill(input: PersistUserSkillInput) {
   const enabled = input.enabled ?? existing?.enabled ?? (input.source === 'imported' ? false : true)
   const status = input.status ?? existing?.status ?? (enabled ? 'published' : 'draft')
   const visibility = input.visibility ?? existing?.visibility ?? 'private'
-  const projectId = input.projectId ?? existing?.projectId ?? '' 
+  const projectId = input.projectId ?? existing?.projectId ?? ''
+  // Explicit input wins; then the stored row; then SKILL.md frontmatter; default utility.
+  const category: UserSkillCategory = normalizeSkillCategory(
+    input.category ?? existing?.category ?? document.frontmatter.category,
+  )
   const contentHash = hash(input.markdown.trim())
   mkdirSync(skillDir(skillId), { recursive: true })
   writeFileSync(skillFile(skillId), `${input.markdown.trim()}\n`, 'utf8')
@@ -96,6 +113,7 @@ export async function persistUserSkill(input: PersistUserSkillInput) {
     enabled,
     status,
     visibility,
+    category,
     projectId,
     version: document.frontmatter.version,
     contentHash,
@@ -131,6 +149,17 @@ export async function setUserSkillEnabled(skillId: string, enabled: boolean) {
   return row
 }
 
+export async function setUserSkillCategory(skillId: string, category: UserSkillCategory) {
+  ensureUserSkillsReady()
+  const row = await UserSkill.findOne({ skillId })
+  if (!row)
+    return null
+  row.category = normalizeSkillCategory(category)
+  row.updatedAt = new Date()
+  await row.save()
+  return row
+}
+
 export async function deleteUserSkill(skillId: string) {
   ensureUserSkillsReady()
   const row = await UserSkill.findOne({ skillId })
@@ -152,6 +181,7 @@ export function toPublicUserSkill(row: IUserSkill & { _id?: string }, includeBod
     enabled: row.enabled,
     status: row.status || (row.enabled ? 'published' : 'draft'),
     visibility: row.visibility || 'private',
+    category: normalizeSkillCategory(row.category),
     projectId: row.projectId || '',
     version: row.version,
     contentHash: row.contentHash,
@@ -166,11 +196,12 @@ export function toPublicUserSkill(row: IUserSkill & { _id?: string }, includeBod
   }
 }
 
-export function serializeSkillExport(skillId: string) {
+export async function serializeSkillExport(skillId: string) {
   const markdown = readUserSkillMarkdown(skillId)
   if (!markdown)
     return null
   const document = parseSkillMarkdown(markdown, skillId, 'imported')
+  const row = await getUserSkillRecord(skillId)
   return {
     format: 'polox-skill/v1',
     skill: {
@@ -178,18 +209,22 @@ export function serializeSkillExport(skillId: string) {
       name: document.frontmatter.name,
       description: document.frontmatter.description,
       version: document.frontmatter.version,
+      category: normalizeSkillCategory(row?.category ?? document.frontmatter.category),
       markdown,
     },
   }
 }
 
-export async function importSkillPackage(payload: { markdown?: string, skill?: { markdown?: string } }, options?: { enabled?: boolean }) {
+export async function importSkillPackage(payload: { markdown?: string, category?: unknown, skill?: { markdown?: string, category?: unknown } }, options?: { enabled?: boolean }) {
   const markdown = payload.markdown || payload.skill?.markdown
   if (!markdown)
     return { ok: false as const, issues: [{ path: 'markdown', message: 'Import payload must include markdown.' }] }
   return persistUserSkill({
     markdown,
     source: 'imported',
+    ...(payload.category ?? payload.skill?.category
+      ? { category: normalizeSkillCategory(payload.category ?? payload.skill?.category) }
+      : {}),
     enabled: options?.enabled ?? false,
   })
 }
@@ -203,13 +238,15 @@ export async function getUserSkillByProjectId(projectId: string) {
   return UserSkill.findOne({ projectId: id })
 }
 
-export async function publishAndEnableUserSkill(skillId: string) {
+export async function publishAndEnableUserSkill(skillId: string, category?: UserSkillCategory) {
   ensureUserSkillsReady()
   const row = await UserSkill.findOne({ skillId })
   if (!row)
     return null
   row.status = 'published'
   row.enabled = true
+  if (category)
+    row.category = normalizeSkillCategory(category)
   row.updatedAt = new Date()
   await row.save()
   return row

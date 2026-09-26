@@ -1,7 +1,11 @@
+// Type-only import keeps this module loadable by plain `node` (type stripping) in scripts/test-*.mjs.
+import type { SkillCategory } from './skillCategory'
+
 // Explicit public catalog: internal operating skills stay out of the picker.
 export const PUBLIC_AGENT_SKILLS = [
   {
     id: 'product-hunt-gallery',
+    category: 'utility',
     icon: 'lucide:gallery-horizontal-end',
     name: 'Product Hunt gallery',
     description: 'Create consistent Product Hunt launch images from your website or product details.',
@@ -12,6 +16,7 @@ export const PUBLIC_AGENT_SKILLS = [
   },
   {
     id: 'app-store-graphics',
+    category: 'utility',
     icon: 'lucide:smartphone',
     name: 'App Store Graphics',
     description: 'Turn app screenshots into matching iPhone 17 Pro Max App Store graphics with a shared visual system.',
@@ -22,6 +27,7 @@ export const PUBLIC_AGENT_SKILLS = [
   },
   {
     id: 'sketch-to-image',
+    category: 'utility',
     icon: 'lucide:pencil-ruler',
     name: 'Sketch to Image',
     description: 'Draw a sketch, add text, and turn your idea into a finished image.',
@@ -31,6 +37,7 @@ export const PUBLIC_AGENT_SKILLS = [
   },
   {
     id: 'image-text-editor',
+    category: 'utility',
     icon: 'lucide:text-cursor-input',
     name: 'Image Text Editor',
     description: 'Edit text in images while preserving the original fonts and image details.',
@@ -40,6 +47,7 @@ export const PUBLIC_AGENT_SKILLS = [
   },
   {
     id: 'image-annotation-edit',
+    category: 'utility',
     icon: 'lucide:map-pin',
     name: 'Annotated Image Edit',
     description: 'Mark points on an image and describe each change to edit precisely.',
@@ -49,6 +57,7 @@ export const PUBLIC_AGENT_SKILLS = [
   },
   {
     id: 'image-object-removal',
+    category: 'utility',
     icon: 'lucide:eraser',
     name: 'Image Object Removal',
     description: 'Mark objects with boxes or masks and remove them while keeping the rest of the image.',
@@ -58,6 +67,7 @@ export const PUBLIC_AGENT_SKILLS = [
   },
   {
     id: 'image-layer-splitter',
+    category: 'utility',
     icon: 'lucide:layers',
     name: 'Image Layer Splitter',
     description: 'Draw boxes around objects to extract them as separate transparent PNG layers.',
@@ -67,6 +77,7 @@ export const PUBLIC_AGENT_SKILLS = [
   },
   {
     id: 'long-form-video',
+    category: 'utility',
     icon: 'lucide:clapperboard',
     name: 'Long-form video',
     description: 'Plan a storyboard and produce a multi-shot film from stills, clips, and concat.',
@@ -75,7 +86,19 @@ export const PUBLIC_AGENT_SKILLS = [
     coverAlt: 'PoloX AI Long-form video skill cover — multi-shot film from a storyboard',
   },
   {
+    id: 'talking-avatar',
+    category: 'utility',
+    icon: 'lucide:audio-lines',
+    name: 'Talking Avatar',
+    description: 'Guided talking-head video: pick ratio, character, spoken language (English / 中文), voice (random / upload / record), script, first frame, then generate lip-sync / talking-head segments.',
+    keywords: 'talking avatar talking head lip sync portrait voice clone 口播 数字人',
+    cover: '/brand/skills/talking-avatar.webp',
+    coverAlt: 'PoloX AI Talking Avatar skill cover — portrait and script to talking-head video',
+    placeholder: 'Start Talking Avatar — we will ask for ratio, character, language, voice, and script step by step…',
+  },
+  {
     id: 'skill-creator',
+    category: 'utility',
     icon: 'lucide:wand-sparkles',
     name: 'Create Skill',
     description: 'Author an L1 skill that orchestrates existing tools — no custom code or UI cards.',
@@ -100,14 +123,21 @@ export interface CatalogAgentSkill {
   coverAlt?: string
   placeholder?: string
   source?: 'builtin' | 'user' | 'imported'
+  /** Sub-category: utility (functional) or fun (entertainment). Missing = utility. */
+  category?: SkillCategory
   enabled?: boolean
 }
 
 export function mergeAgentSkillCatalog(userSkills: CatalogAgentSkill[] = []): CatalogAgentSkill[] {
   const builtin = PUBLIC_AGENT_SKILLS.map(skill => ({ ...skill, source: 'builtin' as const, enabled: true }))
   const enabledUser = userSkills.filter(skill => skill.enabled !== false)
-  const builtinIds = new Set(builtin.map(skill => skill.id))
-  return [...builtin, ...enabledUser.filter(skill => !builtinIds.has(skill.id))]
+  const builtinIds = new Set<string>(builtin.map(skill => skill.id))
+  return [
+    ...builtin,
+    ...enabledUser
+      .filter(skill => skill?.id && !builtinIds.has(skill.id))
+      .map(skill => ({ ...skill, category: (skill.category === 'fun' ? 'fun' : 'utility') as SkillCategory })),
+  ]
 }
 
 export function searchAgentSkills(query: string, skills: readonly CatalogAgentSkill[] = PUBLIC_AGENT_SKILLS) {
