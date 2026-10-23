@@ -124,6 +124,7 @@ PoloX runs locally with Nuxt, Vue, and SQLite. Bring your own [WaveSpeed](https:
 
 1. **Image Text Editor** improvements  
    Detects text coordinates with the LLM and shows matching serial numbers on the canvas next to each text field.
+   <sub>As of October 23, 2026: text editing has been split into a standalone product, <a href="https://retypit.ai">retypit.ai</a>.</sub>
 
 <p align="center">
   <img src="docs/images/polox-readme-update-image-text-editor.jpeg" alt="Image Text Editor — numbered regions on canvas matched to text fields" width="100%" />

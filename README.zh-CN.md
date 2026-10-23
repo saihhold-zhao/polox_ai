@@ -124,6 +124,7 @@ PoloX 基于 Nuxt、Vue 和 SQLite 在本地运行。使用自己的 [WaveSpeed]
 
 1. **优化 Image Text Editor**  
    通过 LLM 检测文字坐标，并在画布上显示与文本框对应的序号。
+   <sub>截至 2026 年 10 月 23 日：文字编辑已拆分为独立产品 <a href="https://retypit.ai">retypit.ai</a>。</sub>
 
 <p align="center">
   <img src="docs/images/polox-readme-update-image-text-editor.jpeg" alt="Image Text Editor — 画布序号与文本框对应" width="100%" />
