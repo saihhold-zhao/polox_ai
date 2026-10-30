@@ -28,10 +28,13 @@
 </p>
 
 <p align="center">
-  🌐官网：<a href="https://polox.ai">polox.ai</a><br />
   💬微信：SaihholdZhao<br />
   📪邮箱：<a href="mailto:saihhold.chiu@gmail.com">saihhold.chiu@gmail.com</a><br />
   𝕏 X：<a href="https://x.com/saihholdzhao">@saihholdzhao</a>
+</p>
+
+<p align="center">
+  <em>说明：<a href="https://polox.ai">polox.ai</a> 已不再托管本项目。该站点正在转向其他产品，与本仓库不再有产品关联。如需体验 PoloX AI，请在本地部署。</em>
 </p>
 
 <p align="center">
@@ -41,9 +44,11 @@
 
 ## 简介
 
-本项目是 [PoloX AI](https://polox.ai) 的开源版本，与 [Lovart](https://lovart.ai)、[Crepal](https://crepal.ai) 同属 AI 创作平台。PoloX 采用 **Agent 原生**的产品设计：以 Agent 对话与无限画布承载全部交互，将创作、生成与编辑融入连续的工作流程。你只需描述想法，与 Agent 沟通，并在画布上持续完善结果。
+PoloX AI 是一款开源创作工作台，与 [Lovart](https://lovart.ai)、[Crepal](https://crepal.ai) 同属 AI 创作平台。它采用 **Agent 原生**的产品设计：以 Agent 对话与无限画布承载全部交互，将创作、生成与编辑融入连续的工作流程。你只需描述想法，与 Agent 沟通，并在画布上持续完善结果。
 
-PoloX 基于 Nuxt、Vue 和 SQLite 在本地运行。使用自己的 [WaveSpeed](https://wavespeed.ai) API Key 即可，无需注册 PoloX 账号或订阅。项目、资源库、对话、生成记录和媒体文件保存在本机；AI 推理由外部服务提供，相关输入会发送给服务商，API 使用费用由服务商收取。WaveSpeed 支持信用卡、微信和支付宝结账。
+**[polox.ai](https://polox.ai) 已不再托管本项目。** 该站点正在转型至其他产品，与本仓库不再有产品关联。本仓库没有在线托管演示，请在本地部署后体验。
+
+PoloX 基于 Nuxt、Vue 和 SQLite 在本地运行。使用自己的 [WaveSpeed](https://wavespeed.ai) API Key 即可，无需 polox.ai 账号或订阅。项目、资源库、对话、生成记录和媒体文件保存在本机；AI 推理由外部服务提供，相关输入会发送给服务商，API 使用费用由服务商收取。WaveSpeed 支持信用卡、微信和支付宝结账。
 
 ## 更新
 

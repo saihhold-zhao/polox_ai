@@ -28,10 +28,13 @@
 </p>
 
 <p align="center">
-  🌐 Website: <a href="https://polox.ai">polox.ai</a><br />
   💬 WeChat: SaihholdZhao<br />
   📪 Email: <a href="mailto:saihhold.chiu@gmail.com">saihhold.chiu@gmail.com</a><br />
   𝕏 X: <a href="https://x.com/saihholdzhao">@saihholdzhao</a>
+</p>
+
+<p align="center">
+  <em>Note: <a href="https://polox.ai">polox.ai</a> no longer hosts this project. The site is moving to other products and is no longer related to this repository. To try PoloX AI, please deploy it locally.</em>
 </p>
 
 <p align="center">
@@ -41,9 +44,11 @@
 
 ## Introduction
 
-This is the open-source edition of [PoloX AI](https://polox.ai), a creative platform in the same space as [Lovart](https://lovart.ai) and [Crepal](https://crepal.ai). PoloX takes an **agent-native** approach: agent conversations and an infinite canvas bring creation, generation, and editing into one continuous workflow. Describe what you want, work with the agent, and refine the results on the canvas.
+PoloX AI is an open-source creative workbench in the same space as [Lovart](https://lovart.ai) and [Crepal](https://crepal.ai). It takes an **agent-native** approach: agent conversations and an infinite canvas bring creation, generation, and editing into one continuous workflow. Describe what you want, work with the agent, and refine the results on the canvas.
 
-PoloX runs locally with Nuxt, Vue, and SQLite. Bring your own [WaveSpeed](https://wavespeed.ai) API key; no PoloX account or subscription is required. Projects, asset libraries, conversations, generation history, and media are stored on your machine. AI inference uses external providers, so relevant inputs are sent to those services and their API charges apply. WaveSpeed supports checkout with credit cards, WeChat Pay, and Alipay.
+**[polox.ai](https://polox.ai) no longer hosts this project.** The website is pivoting to other products and has no ongoing product relationship with this repository. There is no hosted demo for this codebase — run it on your own machine.
+
+PoloX runs locally with Nuxt, Vue, and SQLite. Bring your own [WaveSpeed](https://wavespeed.ai) API key; no account or subscription on polox.ai is required. Projects, asset libraries, conversations, generation history, and media are stored on your machine. AI inference uses external providers, so relevant inputs are sent to those services and their API charges apply. WaveSpeed supports checkout with credit cards, WeChat Pay, and Alipay.
 
 ## Updates
 
